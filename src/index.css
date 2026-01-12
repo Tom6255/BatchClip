@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+  }
+}
+
+body {
+  @apply bg-background text-foreground h-screen w-screen overflow-hidden selection:bg-purple-500/30;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Electron Drag Regions */
+.titlebar-drag-region {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
