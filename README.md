@@ -29,9 +29,54 @@ npm run dev
 ```
 
 ### 构建发布版
+
+#### Windows 版本（本地构建）
+在 Windows 环境下构建 Windows 版本：
+
+**方法1：普通构建（推荐）**
 ```bash
 npm run build
+# 或
+npm run build:win
 ```
+
+**方法2：如果遇到 winCodeSign 符号链接错误，请以管理员权限运行：**
+1. 右键点击 PowerShell 或命令提示符
+2. 选择"以管理员身份运行"
+3. 导航到项目目录
+4. 运行：`npm run build:win`
+
+**方法3：使用 PowerShell 脚本（自动检测管理员权限）**
+```bash
+npm run build:win:ps1
+```
+
+构建产物位于 `release/{version}/` 目录下。
+
+> **注意**：如果遇到 "Cannot create symbolic link" 错误，这是因为 winCodeSign 工具包包含 macOS 符号链接。解决方法是以管理员权限运行构建，或者使用上述 PowerShell 脚本。
+
+#### macOS 版本（使用 GitHub Actions）
+由于 macOS 应用需要在 macOS 环境下构建，推荐使用 GitHub Actions：
+
+1. 将代码推送到 GitHub 仓库
+2. 创建并推送一个标签（例如 `v1.0.0`）：
+   ```bash
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+3. GitHub Actions 会自动触发构建
+4. 在 GitHub Actions 页面下载构建产物
+
+或者手动触发：
+- 在 GitHub 仓库页面，进入 "Actions" 标签
+- 选择 "Build Electron App" 工作流
+- 点击 "Run workflow"
+
+#### 构建所有平台
+```bash
+npm run build:all
+```
+注意：`build:all` 只能在对应平台上构建对应版本（Windows 上只能构建 Windows 版本）。
 
 ## 📖 使用方法
 
