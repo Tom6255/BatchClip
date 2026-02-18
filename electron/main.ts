@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import fs from 'node:fs/promises'
+import fs from 'node:fs'
 
 import ffmpeg from 'fluent-ffmpeg'
 
@@ -51,6 +51,20 @@ function createWindow() {
     }
   })
 
+  // Enable hardware acceleration for video decoding
+  // This is critical for macOS to properly decode H.264/H.265 videos
+  app.commandLine.appendSwitch('enable-hardware-accelerated-decoding', 'true')
+  // Enable GPU rasterization for better performance
+  app.commandLine.appendSwitch('enable-gpu-rasterization')
+  // Override software rendering list (use GPU even on unsupported systems)
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+  // Enable hardware video decoding
+  app.commandLine.appendSwitch('enable-accelerated-video-decode')
+  // Enable WebGL for better video rendering
+  app.commandLine.appendSwitch('enable-webgl')
+  // Increase video memory
+  app.commandLine.appendSwitch('video-memory-buffer-size', '4')
+
   // Test active push message to Renderer-process.
   win.webContents.on('did-finish-load', () => {
     win?.webContents.send('main-process-message', (new Date).toLocaleString())
@@ -77,10 +91,17 @@ app.on('activate', () => {
   }
 })
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  createWindow()
+})
 
 
 // --- IPC Handlers for Video Processing ---
+
+// Get the file path from a dropped file
+ipcMain.handle('get-file-path', (_event, file) => {
+  return (file as any).path || null;
+});
 
 
 ipcMain.handle('show-save-dialog', async () => {
@@ -108,7 +129,7 @@ ipcMain.handle('process-batch', async (_event, { filePath, outputDir, segments }
   console.log(`Batch processing ${segments.length} clips from: ${filePath}`);
 
   // Ensure output dir exists
-  await fs.mkdir(outputDir, { recursive: true });
+  await fs.promises.mkdir(outputDir, { recursive: true });
 
   const baseName = path.basename(filePath, path.extname(filePath));
 

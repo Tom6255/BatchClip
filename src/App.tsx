@@ -151,12 +151,26 @@ function App() {
 
   // Reset state when file changes
   const [videoSrc, setVideoSrc] = useState<string>("");
+  const [filePath, setFilePath] = useState<string>("");
 
-  // Create Object URL only when file changes
+  // Create Object URL when file changes
   useEffect(() => {
     if (videoFile) {
-      const url = URL.createObjectURL(videoFile);
-      setVideoSrc(url);
+      // In Electron, dropped files have a 'path' property
+      const electronPath = (videoFile as any).path as string | undefined;
+
+      if (electronPath) {
+        // Store the file path for export
+        setFilePath(electronPath);
+        // Use Object URL for playback - most reliable method
+        const url = URL.createObjectURL(videoFile);
+        setVideoSrc(url);
+      } else {
+        // Fallback for non-Electron environments
+        const url = URL.createObjectURL(videoFile);
+        setVideoSrc(url);
+        setFilePath("");
+      }
 
       setIsPlaying(false);
       setDuration(0);
@@ -165,7 +179,7 @@ function App() {
       setPendingStart(null);
 
       return () => {
-        URL.revokeObjectURL(url);
+        URL.revokeObjectURL(videoSrc);
         setVideoSrc("");
       };
     }
@@ -562,16 +576,8 @@ function App() {
                   onClick={async () => {
                     console.log("Export button clicked");
                     try {
-                      if (!videoFile) {
-                        console.error("No video file");
-                        return;
-                      }
-
-                      console.log("Getting file path...");
-                      // In Electron, dropped files have a 'path' property
-                      const filePath = (videoFile as any).path as string;
-                      console.log("File path resolved:", filePath);
                       if (!filePath) {
+                        console.error("No file path");
                         alert(t('pathError'));
                         return;
                       }
