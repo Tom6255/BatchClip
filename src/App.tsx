@@ -1,11 +1,70 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, X, Zap, Download, Trash2, Scissors } from 'lucide-react';
+import { Upload, X, Zap, Download, Trash2, Scissors, Settings as SettingsIcon } from 'lucide-react';
 import { cn } from './lib/utils';
 import VideoPlayer, { VideoPlayerRef } from './components/VideoPlayer';
 import Timeline from './components/Timeline';
 import { v4 as uuidv4 } from 'uuid';
 
-const MAX_CLIP_DURATION = 3.9;
+const DEFAULT_FIXED_DURATION = 3.9;
+
+const translations = {
+  en: {
+    runningTime: 'Running Time',
+    total: 'Total',
+    setIn: 'Set In',
+    setOut: 'Set Out',
+    playPause: 'Play/Pause',
+    markIn: 'Mark In',
+    markOut: 'Mark Out',
+    clips: 'Clips',
+    noClips: 'No clips created. Use I and O to snip.',
+    clip: 'Clip',
+    exportAll: 'Export All Clips',
+    dropVideo: 'Drop video to start',
+    selectVideo: 'Select Video',
+    settings: 'Settings',
+    fixedDuration: 'Fixed Duration',
+    fixedDurationDesc: 'Auto-close clip at default duration',
+    defaultDurationLabel: 'Default Duration (seconds)',
+    disabledDesc: 'Disabled when fixed duration is off',
+    done: 'Done',
+    language: 'Language',
+    uploadVideoAlert: 'Please upload a video file.',
+    pathError: 'Could not determine source file path. Please try dropping the file again.',
+    exporting: 'Exporting...',
+    exportSuccess: 'Exported {count} clips successfully!',
+    exportFailed: 'Some exports failed. Check console for details.',
+    exportError: 'Export failed: '
+  },
+  zh: {
+    runningTime: '当前进度',
+    total: '总时长',
+    setIn: '入点',
+    setOut: '出点',
+    playPause: '播放/暂停',
+    markIn: '设置入点',
+    markOut: '设置出点',
+    clips: '片段列表',
+    noClips: '暂无片段。使用 I 和 O 键进行快速剪辑。',
+    clip: '片段',
+    exportAll: '批量导出所有片段',
+    dropVideo: '拖入视频文件开始处理',
+    selectVideo: '选择本地视频',
+    settings: '偏好设置',
+    fixedDuration: '固定时长模式',
+    fixedDurationDesc: '达到预设值后自动结束当前片段',
+    defaultDurationLabel: '默认裁剪时长 (秒)',
+    disabledDesc: '非固定时长模式下已禁用',
+    done: '确定',
+    language: '界面语言',
+    uploadVideoAlert: '请上传视频文件。',
+    pathError: '未能识别文件路径，请重新尝试拖入文件。',
+    exporting: '正在导出...',
+    exportSuccess: '成功导出 {count} 个视频片段！',
+    exportFailed: '部分导出任务失败，请检查控制台输出。',
+    exportError: '导出过程中出错: '
+  }
+};
 
 // Reusable Button Component
 const Button = ({ className, variant = 'primary', ...props }: any) => {
@@ -38,6 +97,45 @@ interface Segment {
 function App() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Settings State
+  const [useFixedDuration, setUseFixedDuration] = useState(() => {
+    const saved = localStorage.getItem('useFixedDuration');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
+  const [defaultDuration, setDefaultDuration] = useState(() => {
+    const saved = localStorage.getItem('defaultDuration');
+    return saved !== null ? JSON.parse(saved) : DEFAULT_FIXED_DURATION;
+  });
+  const [language, setLanguage] = useState<'en' | 'zh'>(() => {
+    const saved = localStorage.getItem('language');
+    return (saved === 'en' || saved === 'zh') ? saved : 'zh';
+  });
+
+  // i18n helper
+  const t = (key: keyof typeof translations.en, params?: Record<string, any>) => {
+    let text = translations[language][key] || translations.en[key] || key;
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        text = text.replace(`{${k}}`, v.toString());
+      });
+    }
+    return text;
+  };
+
+  // Save settings when they change
+  useEffect(() => {
+    localStorage.setItem('useFixedDuration', JSON.stringify(useFixedDuration));
+  }, [useFixedDuration]);
+
+  useEffect(() => {
+    localStorage.setItem('defaultDuration', JSON.stringify(defaultDuration));
+  }, [defaultDuration]);
+
+  useEffect(() => {
+    localStorage.setItem('language', language);
+  }, [language]);
 
 
   // Video State
@@ -106,16 +204,12 @@ function App() {
 
     // Validate order
     if (end <= pendingStart) {
-      // Assuming user wants to reset or something, but usually O > I.
-      // If simply behind, ignore or clamp?
-      // Let's reset pending if invalid
-      // setPendingStart(null); 
       return;
     }
 
-    // Clamp max duration
-    if (end - pendingStart > MAX_CLIP_DURATION) {
-      end = pendingStart + MAX_CLIP_DURATION;
+    // Clamp max duration if fixed duration is enabled
+    if (useFixedDuration && (end - pendingStart > defaultDuration)) {
+      end = pendingStart + defaultDuration;
     }
 
     const newSegment: Segment = {
@@ -126,7 +220,7 @@ function App() {
 
     setSegments(prev => [...prev, newSegment].sort((a, b) => a.start - b.start));
     setPendingStart(null);
-  }, [pendingStart, currentTime]);
+  }, [pendingStart, currentTime, useFixedDuration, defaultDuration]);
 
 
   // Time Update Logic (Auto-close)
@@ -134,9 +228,9 @@ function App() {
     setCurrentTime(t);
 
     // Auto-close logic
-    if (pendingStart !== null && (t - pendingStart >= MAX_CLIP_DURATION)) {
+    if (useFixedDuration && pendingStart !== null && (t - pendingStart >= defaultDuration)) {
       // Force close at precise limit
-      const autoEnd = pendingStart + MAX_CLIP_DURATION;
+      const autoEnd = pendingStart + defaultDuration;
       const newSegment: Segment = {
         id: uuidv4(),
         start: pendingStart,
@@ -144,9 +238,6 @@ function App() {
       };
       setSegments(prev => [...prev, newSegment].sort((a, b) => a.start - b.start));
       setPendingStart(null);
-
-      // Optional: Pause? Or Keep playing? User request implies "auto add O point"
-      // Let's keep playing but maybe flash UI?
     }
   };
 
@@ -181,10 +272,13 @@ function App() {
 
   const handleFiles = (files: FileList) => {
     const file = files[0];
-    if (file.type.startsWith('video/')) {
+    const fileName = file.name.toLowerCase();
+    const isM4S = fileName.endsWith('.m4s');
+
+    if (file.type.startsWith('video/') || isM4S) {
       setVideoFile(file);
     } else {
-      alert("Please upload a video file.");
+      alert(t('uploadVideoAlert'));
     }
   };
 
@@ -196,7 +290,10 @@ function App() {
   };
 
   return (
-    <div className="h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-blue-500/30 flex flex-col overflow-hidden">
+    <div
+      className="h-screen bg-zinc-950 text-zinc-100 selection:bg-blue-500/30 flex flex-col overflow-hidden"
+      style={{ fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif' }}
+    >
 
       {/* Header */}
       <header className="fixed top-0 left-0 right-0 h-14 bg-zinc-950/80 backdrop-blur-md border-b border-white/5 flex items-center justify-between px-6 z-50 titlebar-drag-region">
@@ -209,6 +306,109 @@ function App() {
           </span>
         </div>
       </header>
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowSettings(false)} />
+          <div className="relative w-full max-w-sm bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-white/5 flex items-center justify-between">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <SettingsIcon className="w-5 h-5 text-blue-500" />
+                {t('settings')}
+              </h3>
+              <Button variant="ghost" className="h-8 w-8 p-0" onClick={() => setShowSettings(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+            <div className="p-6 space-y-6">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <label className="text-sm font-medium text-zinc-200">{t('fixedDuration')}</label>
+                    <p className="text-xs text-zinc-500">{t('fixedDurationDesc')}</p>
+                  </div>
+                  <button
+                    onClick={() => setUseFixedDuration(!useFixedDuration)}
+                    className={cn(
+                      "w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none",
+                      useFixedDuration ? "bg-blue-600" : "bg-zinc-700"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-4 h-4 rounded-full bg-white transition-transform duration-200 mx-1",
+                      useFixedDuration ? "translate-x-5" : "translate-x-0"
+                    )} />
+                  </button>
+                </div>
+
+                <div className={cn("space-y-3 transition-opacity duration-200", !useFixedDuration && "opacity-50")}>
+                  <label className="text-sm font-medium text-zinc-200 block">
+                    {t('defaultDurationLabel')}
+                  </label>
+                  <div className="relative group">
+                    <input
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      value={defaultDuration}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val)) setDefaultDuration(val);
+                      }}
+                      onBlur={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (isNaN(val) || val <= 0) setDefaultDuration(DEFAULT_FIXED_DURATION);
+                      }}
+                      disabled={!useFixedDuration}
+                      className="w-full bg-zinc-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono"
+                    />
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 pointer-events-none">
+                      sec
+                    </div>
+                  </div>
+                  {!useFixedDuration && (
+                    <p className="text-[10px] text-zinc-500">{t('disabledDesc')}</p>
+                  )}
+                </div>
+
+                <div className="pt-4 border-t border-white/5 space-y-3">
+                  <label className="text-sm font-medium text-zinc-200 block">
+                    {t('language')}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setLanguage('en')}
+                      className={cn(
+                        "px-3 py-2 rounded-lg text-sm transition-all border",
+                        language === 'en'
+                          ? "bg-blue-600/10 border-blue-500 text-blue-500"
+                          : "bg-zinc-800/50 border-white/5 text-zinc-400 hover:text-zinc-200"
+                      )}
+                    >
+                      English
+                    </button>
+                    <button
+                      onClick={() => setLanguage('zh')}
+                      className={cn(
+                        "px-3 py-2 rounded-lg text-sm transition-all border",
+                        language === 'zh'
+                          ? "bg-blue-600/10 border-blue-500 text-blue-500"
+                          : "bg-zinc-800/50 border-white/5 text-zinc-400 hover:text-zinc-200"
+                      )}
+                    >
+                      简体中文
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="p-4 bg-zinc-900/50 border-t border-white/5">
+              <Button className="w-full" onClick={() => setShowSettings(false)}>{t('done')}</Button>
+            </div>
+          </div>
+        </div>
+      )}
 
 
       {/* Main Content */}
@@ -226,9 +426,9 @@ function App() {
           >
             <div className="flex flex-col items-center text-center space-y-4">
               <Upload className="w-12 h-12 mx-auto text-zinc-600" />
-              <h2 className="text-2xl font-semibold text-white">Drop video to start</h2>
-              <input type="file" className="hidden" id="file-upload" accept="video/*" onChange={handleChange} />
-              <Button onClick={() => document.getElementById('file-upload')?.click()}>Select Video</Button>
+              <h2 className="text-2xl font-semibold text-white">{t('dropVideo')}</h2>
+              <input type="file" className="hidden" id="file-upload" accept="video/*,.m4s" onChange={handleChange} />
+              <Button onClick={() => document.getElementById('file-upload')?.click()}>{t('selectVideo')}</Button>
             </div>
           </div>
         ) : (
@@ -256,8 +456,8 @@ function App() {
               <div className="h-48 bg-zinc-900 border border-white/5 rounded-lg p-4 flex flex-col gap-2 flex-shrink-0">
 
                 <div className="flex items-center justify-between text-xs text-zinc-400 font-mono">
-                  <span>Running Time: {formatTime(currentTime)}</span>
-                  <span>Total: {formatTime(duration)}</span>
+                  <span>{t('runningTime')}: {formatTime(currentTime)}</span>
+                  <span>{t('total')}: {formatTime(duration)}</span>
                 </div>
                 <div className="flex-1 min-h-0">
                   <Timeline
@@ -274,32 +474,32 @@ function App() {
                 <div className="flex items-center gap-4 mt-2">
                   <div className="flex items-center gap-2">
                     <kbd className="px-2 py-1 bg-zinc-800 rounded border border-white/10 text-xs font-mono">I</kbd>
-                    <span className="text-sm text-zinc-400">Set In</span>
+                    <span className="text-sm text-zinc-400">{t('setIn')}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <kbd className="px-2 py-1 bg-zinc-800 rounded border border-white/10 text-xs font-mono">O</kbd>
-                    <span className="text-sm text-zinc-400">Set Out</span>
+                    <span className="text-sm text-zinc-400">{t('setOut')}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <kbd className="px-2 py-1 bg-zinc-800 rounded border border-white/10 text-xs font-mono">Space</kbd>
-                    <span className="text-sm text-zinc-400">Play/Pause</span>
+                    <span className="text-sm text-zinc-400">{t('playPause')}</span>
                   </div>
                   <div className="ml-auto flex items-center gap-2">
                     <Button
                       variant="secondary"
-                      className="h-8 text-xs"
+                      className="h-8 text-xs font-normal"
                       onClick={() => setPendingStart(currentTime)}
                       disabled={pendingStart !== null}
                     >
-                      Mark In (I)
+                      {t('markIn')} (I)
                     </Button>
                     <Button
                       variant="secondary"
-                      className="h-8 text-xs"
+                      className="h-8 text-xs font-normal"
                       onClick={closeSegment}
                       disabled={pendingStart === null}
                     >
-                      Mark Out (O)
+                      {t('markOut')} (O)
                     </Button>
                   </div>
                 </div>
@@ -311,18 +511,23 @@ function App() {
               <div className="p-4 border-b border-white/5 flex items-center justify-between">
                 <h3 className="font-medium flex items-center gap-2">
                   <Scissors className="w-4 h-4 text-blue-500" />
-                  Clips ({segments.length})
+                  {t('clips')} ({segments.length})
                 </h3>
-                <Button variant="ghost" className="h-8 w-8 p-0 no-drag" onClick={() => setVideoFile(null)}>
-                  <X className="w-4 h-4" />
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" className="h-8 w-8 p-0" onClick={() => setShowSettings(true)}>
+                    <SettingsIcon className="w-4 h-4" />
+                  </Button>
+                  <Button variant="ghost" className="h-8 w-8 p-0 no-drag" onClick={() => setVideoFile(null)}>
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
 
               </div>
 
               <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
                 {segments.length === 0 ? (
                   <div className="text-center text-zinc-500 py-10 text-sm">
-                    No clips created.<br />Use <b>I</b> and <b>O</b> to snip.
+                    {t('noClips')}
                   </div>
                 ) : (
                   segments.map((seg, idx) => (
@@ -332,7 +537,7 @@ function App() {
                       </div>
                       <div className="flex-1">
                         <div className="text-sm font-medium text-zinc-300">
-                          Clip {idx + 1}
+                          {t('clip')} {idx + 1}
                         </div>
                         <div className="text-xs text-zinc-500 font-mono">
                           {formatTime(seg.start)} - {formatTime(seg.end)}
@@ -366,7 +571,7 @@ function App() {
                       const filePath = (videoFile as any).path as string;
                       console.log("File path resolved:", filePath);
                       if (!filePath) {
-                        alert("Could not determine source file path. Please try dropping the file again.");
+                        alert(t('pathError'));
                         return;
                       }
 
@@ -379,7 +584,7 @@ function App() {
                       const btn = document.activeElement as HTMLButtonElement;
                       if (btn) btn.disabled = true;
                       const originalText = btn.innerText;
-                      btn.innerText = "Exporting...";
+                      btn.innerText = t('exporting');
 
                       try {
                         const res = await window.ipcRenderer.processBatch({
@@ -388,9 +593,9 @@ function App() {
                           segments
                         });
                         if (res.success) {
-                          alert(`Exported ${res.results.length} clips successfully!`);
+                          alert(t('exportSuccess', { count: res.results.length }));
                         } else {
-                          alert("Some exports failed. Check console for details.");
+                          alert(t('exportFailed'));
                         }
                       } finally {
                         if (btn) {
@@ -400,13 +605,13 @@ function App() {
                       }
                     } catch (e: any) {
                       console.error("Export error:", e);
-                      alert("Export failed: " + e.message);
+                      alert(t('exportError') + e.message);
                     }
                   }}
 
                 >
                   <Download className="w-4 h-4" />
-                  Export All Clips
+                  {t('exportAll')}
                 </Button>
               </div>
             </div>
