@@ -273,9 +273,10 @@ function App() {
   const handleFiles = (files: FileList) => {
     const file = files[0];
     const fileName = file.name.toLowerCase();
-    const isM4S = fileName.endsWith('.m4s');
+    const videoExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.webm', '.ts', '.m4s'];
+    const hasVideoExtension = videoExtensions.some(ext => fileName.endsWith(ext));
 
-    if (file.type.startsWith('video/') || isM4S) {
+    if (file.type.startsWith('video/') || hasVideoExtension) {
       setVideoFile(file);
     } else {
       alert(t('uploadVideoAlert'));
@@ -427,7 +428,7 @@ function App() {
             <div className="flex flex-col items-center text-center space-y-4">
               <Upload className="w-12 h-12 mx-auto text-zinc-600" />
               <h2 className="text-2xl font-semibold text-white">{t('dropVideo')}</h2>
-              <input type="file" className="hidden" id="file-upload" accept="video/*,.m4s" onChange={handleChange} />
+              <input type="file" className="hidden" id="file-upload" accept="video/*,.mp4,.mov,.avi,.mkv,.flv,.wmv,.webm,.ts,.m4s" onChange={handleChange} />
               <Button onClick={() => document.getElementById('file-upload')?.click()}>{t('selectVideo')}</Button>
             </div>
           </div>
