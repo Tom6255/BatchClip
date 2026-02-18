@@ -1,9 +1,9 @@
 {
   "name": "video2livephoto",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "一款用于从视频中快速截取多个短片段的桌面应用，特别适合为 Live Photo 准备素材",
-  "author": "Your Name",
+  "author": "Tom6255",
   "type": "module",
   "scripts": {
     "dev": "vite",
