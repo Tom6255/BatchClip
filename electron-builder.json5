@@ -19,17 +19,16 @@
     "identity": null
   },
   "win": {
-  "target": [
-    {
-      "target": "nsis",
-      "arch": ["x64"]
-    }
-  ],
-  "artifactName": "${productName}-Windows-${version}-Setup.${ext}",
-  "sign": false,
-  "signDlls": false,
-  "verifyUpdateCodeSignature": false
-},
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "artifactName": "${productName}-Windows-${version}-Setup.${ext}",
+    "certificateFile": null,
+    "certificatePassword": null
+  },
 "nsis": {
   "oneClick": false,
   "perMachine": false,
