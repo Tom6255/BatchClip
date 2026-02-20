@@ -10,6 +10,7 @@ interface VideoPlayerProps {
     onEnded: () => void;
     onPlayPause: () => void;
     volume?: number;
+    externalLoadingText?: string | null;
 }
 
 export interface VideoPlayerRef {
@@ -24,7 +25,8 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     onDurationChange,
     onEnded,
     onPlayPause,
-    volume = 1
+    volume = 1,
+    externalLoadingText = null
 }, ref) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const [error, setError] = useState<string | null>(null);
@@ -97,7 +99,11 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     };
 
     const handleLoadedMetadata = () => {
-        console.log('Video metadata loaded:', videoRef.current?.duration);
+        console.log('Video metadata loaded:', {
+            duration: videoRef.current?.duration,
+            width: videoRef.current?.videoWidth,
+            height: videoRef.current?.videoHeight
+        });
         setIsLoading(false);
         setHasLoadedData(true);
         setError(null);
@@ -143,15 +149,14 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
                 onError={handleVideoError}
                 preload="metadata"
                 playsInline
-                crossOrigin="anonymous"
             />
 
             {/* Loading Indicator */}
-            {isLoading && (
+            {(isLoading || externalLoadingText) && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/20">
                     <div className="flex flex-col items-center gap-3">
                         <div className="w-12 h-12 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
-                        <span className="text-white text-sm">加载视频中...</span>
+                        <span className="text-white text-sm">{externalLoadingText || '加载视频中...'}</span>
                     </div>
                 </div>
             )}

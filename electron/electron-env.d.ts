@@ -21,7 +21,29 @@ interface Window {
       filePath: string,
       outputDir: string,
       segments: { start: number, end: number, id: string }[]
-    }) => Promise<{ success: boolean; results: any[] }>;
+    }) => Promise<{
+      success: boolean;
+      results: Array<{
+        id: string;
+        success: boolean;
+        path?: string;
+        error?: string;
+      }>;
+    }>;
+
+    preparePreview: (opts: {
+      filePath: string
+    }) => Promise<{
+      success: boolean;
+      useProxy: boolean;
+      url?: string;
+      path?: string;
+      error?: string;
+    }>;
+
+    cleanupPreview: (opts: {
+      proxyPath: string
+    }) => Promise<{ success: boolean; error?: string }>;
 
     showOpenDialog: () => Promise<string | null>;
     showSaveDialog: () => Promise<string | null>;
@@ -29,9 +51,9 @@ interface Window {
 
 
 
-    on(channel: string, listener: (event: any, ...args: any[]) => void): void;
-    off(channel: string, ...args: any[]): void;
-    send(channel: string, ...args: any[]): void;
-    invoke(channel: string, ...args: any[]): Promise<any>;
+    on(channel: string, listener: (event: unknown, ...args: unknown[]) => void): void;
+    off(channel: string, ...args: unknown[]): void;
+    send(channel: string, ...args: unknown[]): void;
+    invoke(channel: string, ...args: unknown[]): Promise<unknown>;
   }
 }

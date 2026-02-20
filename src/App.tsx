@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, type ButtonHTMLAttributes } from 'react';
 import { Upload, X, Zap, Download, Trash2, Scissors, Settings as SettingsIcon } from 'lucide-react';
 import { cn } from './lib/utils';
 import VideoPlayer, { VideoPlayerRef } from './components/VideoPlayer';
@@ -6,6 +6,11 @@ import Timeline from './components/Timeline';
 import { v4 as uuidv4 } from 'uuid';
 
 const DEFAULT_FIXED_DURATION = 3.9;
+
+const toFileUrl = (absolutePath: string) => {
+  const normalized = absolutePath.replace(/\\/g, '/');
+  return encodeURI(normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`);
+};
 
 const translations = {
   en: {
@@ -34,7 +39,9 @@ const translations = {
     exporting: 'Exporting...',
     exportSuccess: 'Exported {count} clips successfully!',
     exportFailed: 'Some exports failed. Check console for details.',
-    exportError: 'Export failed: '
+    exportError: 'Export failed: ',
+    preparingPreview: 'Preparing compatible preview...',
+    compatiblePreviewMode: 'Compatible Preview Mode'
   },
   zh: {
     runningTime: '当前进度',
@@ -62,12 +69,20 @@ const translations = {
     exporting: '正在导出...',
     exportSuccess: '成功导出 {count} 个视频片段！',
     exportFailed: '部分导出任务失败，请检查控制台输出。',
-    exportError: '导出过程中出错: '
+    exportError: '导出过程中出错: ',
+    preparingPreview: '正在生成兼容预览...',
+    compatiblePreviewMode: '兼容预览模式'
   }
 };
 
+type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+
+interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: ButtonVariant;
+}
+
 // Reusable Button Component
-const Button = ({ className, variant = 'primary', ...props }: any) => {
+const Button = ({ className, variant = 'primary', ...props }: ButtonProps) => {
   const variants = {
     primary: "bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/30 disabled:opacity-50 disabled:cursor-not-allowed",
     secondary: "bg-zinc-800 hover:bg-zinc-700 text-zinc-300",
@@ -114,7 +129,7 @@ function App() {
   });
 
   // i18n helper
-  const t = (key: keyof typeof translations.en, params?: Record<string, any>) => {
+  const t = (key: keyof typeof translations.en, params?: Record<string, string | number>) => {
     let text = translations[language][key] || translations.en[key] || key;
     if (params) {
       Object.entries(params).forEach(([k, v]) => {
@@ -152,64 +167,103 @@ function App() {
   // Reset state when file changes
   const [videoSrc, setVideoSrc] = useState<string>("");
   const [filePath, setFilePath] = useState<string>("");
+  const [isPreparingPreview, setIsPreparingPreview] = useState(false);
+  const [usingCompatiblePreview, setUsingCompatiblePreview] = useState(false);
+  const previewProxyPathRef = useRef<string | null>(null);
 
-  // Create Object URL when file changes
-  useEffect(() => {
-    if (videoFile) {
-      // In Electron, dropped files have a 'path' property
-      const electronPath = (videoFile as any).path as string | undefined;
+  const cleanupPreviewProxy = useCallback(async (proxyPath: string | null) => {
+    if (!proxyPath) return;
 
-      if (electronPath) {
-        // Store the file path for export
-        setFilePath(electronPath);
-        // Use Object URL for playback - most reliable method
-        const url = URL.createObjectURL(videoFile);
-        setVideoSrc(url);
-      } else {
-        // Fallback for non-Electron environments
-        const url = URL.createObjectURL(videoFile);
-        setVideoSrc(url);
-        setFilePath("");
-      }
-
-      setIsPlaying(false);
-      setDuration(0);
-      setCurrentTime(0);
-      setSegments([]);
-      setPendingStart(null);
-
-      return () => {
-        URL.revokeObjectURL(videoSrc);
-        setVideoSrc("");
-      };
+    try {
+      await window.ipcRenderer.cleanupPreview({ proxyPath });
+    } catch (error) {
+      console.warn('Failed to cleanup preview proxy:', error);
     }
-  }, [videoFile]);
+  }, []);
+
+  // Cleanup preview proxy when component unmounts
+  useEffect(() => {
+    return () => {
+      const stalePreviewPath = previewProxyPathRef.current;
+      previewProxyPathRef.current = null;
+      void cleanupPreviewProxy(stalePreviewPath);
+    };
+  }, [cleanupPreviewProxy]);
+
+  // Prepare playback source when file changes
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+
+    // Cleanup stale preview proxy from previous file
+    if (previewProxyPathRef.current) {
+      const stalePreviewPath = previewProxyPathRef.current;
+      previewProxyPathRef.current = null;
+      void cleanupPreviewProxy(stalePreviewPath);
+    }
+
+    setIsPlaying(false);
+    setDuration(0);
+    setCurrentTime(0);
+    setSegments([]);
+    setPendingStart(null);
+    setUsingCompatiblePreview(false);
+    setIsPreparingPreview(false);
+
+    if (!videoFile) {
+      setVideoSrc("");
+      setFilePath("");
+      return;
+    }
+
+    // In Electron, dropped files include an absolute local path.
+    const electronPath = (videoFile as File & { path?: string }).path;
+
+    if (electronPath) {
+      setFilePath(electronPath);
+      setVideoSrc(toFileUrl(electronPath));
+      setIsPreparingPreview(true);
+
+      window.ipcRenderer.preparePreview({ filePath: electronPath })
+        .then((result) => {
+          if (cancelled) return;
+          setIsPreparingPreview(false);
+
+          if (!result.success) {
+            console.warn('Preview preparation failed:', result.error);
+            return;
+          }
+
+          if (result.useProxy && result.url && result.path) {
+            previewProxyPathRef.current = result.path;
+            setVideoSrc(result.url);
+            setUsingCompatiblePreview(true);
+          }
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setIsPreparingPreview(false);
+          console.warn('Preview preparation failed:', error);
+        });
+    } else {
+      objectUrl = URL.createObjectURL(videoFile);
+      setVideoSrc(objectUrl);
+      setFilePath("");
+    }
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [videoFile, cleanupPreviewProxy]);
 
 
   const handleDurationChange = (d: number) => {
     if (!d || !isFinite(d)) return;
     setDuration(d);
   };
-
-  // Keyboard Shortcuts (I/O)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!videoFile) return;
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-
-      if (e.key.toLowerCase() === 'i') {
-        setPendingStart(currentTime);
-      } else if (e.key.toLowerCase() === 'o') {
-        closeSegment();
-      } else if (e.code === 'Space') {
-        e.preventDefault(); // Prevent scroll
-        setIsPlaying(p => !p);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [videoFile, currentTime, pendingStart]);
 
   const closeSegment = useCallback(() => {
     if (pendingStart === null) return;
@@ -235,6 +289,26 @@ function App() {
     setSegments(prev => [...prev, newSegment].sort((a, b) => a.start - b.start));
     setPendingStart(null);
   }, [pendingStart, currentTime, useFixedDuration, defaultDuration]);
+
+  // Keyboard Shortcuts (I/O)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!videoFile) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.key.toLowerCase() === 'i') {
+        setPendingStart(currentTime);
+      } else if (e.key.toLowerCase() === 'o') {
+        closeSegment();
+      } else if (e.code === 'Space') {
+        e.preventDefault(); // Prevent scroll
+        setIsPlaying(p => !p);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [videoFile, currentTime, closeSegment]);
 
 
   // Time Update Logic (Auto-close)
@@ -463,6 +537,7 @@ function App() {
                   onTimeUpdate={handleTimeUpdate}
                   onDurationChange={handleDurationChange}
                   onEnded={() => setIsPlaying(false)}
+                  externalLoadingText={isPreparingPreview ? t('preparingPreview') : null}
                 />
 
               </div>
@@ -472,7 +547,12 @@ function App() {
 
                 <div className="flex items-center justify-between text-xs text-zinc-400 font-mono">
                   <span>{t('runningTime')}: {formatTime(currentTime)}</span>
-                  <span>{t('total')}: {formatTime(duration)}</span>
+                  <div className="flex items-center gap-3">
+                    {usingCompatiblePreview && (
+                      <span className="text-amber-400">{t('compatiblePreviewMode')}</span>
+                    )}
+                    <span>{t('total')}: {formatTime(duration)}</span>
+                  </div>
                 </div>
                 <div className="flex-1 min-h-0">
                   <Timeline
@@ -610,9 +690,10 @@ function App() {
                           btn.innerText = originalText;
                         }
                       }
-                    } catch (e: any) {
-                      console.error("Export error:", e);
-                      alert(t('exportError') + e.message);
+                    } catch (error: unknown) {
+                      const errorMessage = error instanceof Error ? error.message : String(error);
+                      console.error("Export error:", error);
+                      alert(t('exportError') + errorMessage);
                     }
                   }}
 

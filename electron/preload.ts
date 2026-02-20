@@ -26,6 +26,14 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     segments: { start: number, end: number, id: string }[]
   }) => ipcRenderer.invoke('process-batch', opts),
 
+  preparePreview: (opts: {
+    filePath: string
+  }) => ipcRenderer.invoke('prepare-preview', opts),
+
+  cleanupPreview: (opts: {
+    proxyPath: string
+  }) => ipcRenderer.invoke('cleanup-preview', opts),
+
   showOpenDialog: () => ipcRenderer.invoke('show-open-dialog'),
   showSaveDialog: () => ipcRenderer.invoke('show-save-dialog')
 })
