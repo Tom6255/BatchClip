@@ -40,8 +40,10 @@ const translations = {
     exportSuccess: 'Exported {count} clips successfully!',
     exportFailed: 'Some exports failed. Check console for details.',
     exportError: 'Export failed: ',
+    exportingClips: 'Exporting clips...',
     preparingPreview: 'Preparing compatible preview...',
-    compatiblePreviewMode: 'Compatible Preview Mode'
+    compatiblePreviewMode: 'Compatible Preview Mode',
+    useCompatiblePreview: 'Use Compatible Preview'
   },
   zh: {
     runningTime: '当前进度',
@@ -70,8 +72,10 @@ const translations = {
     exportSuccess: '成功导出 {count} 个视频片段！',
     exportFailed: '部分导出任务失败，请检查控制台输出。',
     exportError: '导出过程中出错: ',
+    exportingClips: '正在导出片段...',
     preparingPreview: '正在生成兼容预览...',
-    compatiblePreviewMode: '兼容预览模式'
+    compatiblePreviewMode: '兼容预览模式',
+    useCompatiblePreview: '启用兼容预览'
   }
 };
 
@@ -107,6 +111,40 @@ interface Segment {
   start: number;
   end: number;
 }
+
+interface PreviewPrepareProgressPayload {
+  jobId: string;
+  phase: 'start' | 'progress' | 'done';
+  percent: number;
+}
+
+interface BatchExportProgressPayload {
+  jobId: string;
+  phase: 'start' | 'progress' | 'done';
+  percent: number;
+  currentClip: number;
+  totalClips: number;
+}
+
+const isPreviewPrepareProgressPayload = (payload: unknown): payload is PreviewPrepareProgressPayload => {
+  if (!payload || typeof payload !== 'object') return false;
+  const data = payload as Record<string, unknown>;
+  const isValidPhase = data.phase === 'start' || data.phase === 'progress' || data.phase === 'done';
+  return typeof data.jobId === 'string' && typeof data.percent === 'number' && isValidPhase;
+};
+
+const isBatchExportProgressPayload = (payload: unknown): payload is BatchExportProgressPayload => {
+  if (!payload || typeof payload !== 'object') return false;
+  const data = payload as Record<string, unknown>;
+  const isValidPhase = data.phase === 'start' || data.phase === 'progress' || data.phase === 'done';
+  return (
+    typeof data.jobId === 'string' &&
+    typeof data.percent === 'number' &&
+    typeof data.currentClip === 'number' &&
+    typeof data.totalClips === 'number' &&
+    isValidPhase
+  );
+};
 
 // Main App Component
 function App() {
@@ -168,8 +206,18 @@ function App() {
   const [videoSrc, setVideoSrc] = useState<string>("");
   const [filePath, setFilePath] = useState<string>("");
   const [isPreparingPreview, setIsPreparingPreview] = useState(false);
+  const [previewProgressPercent, setPreviewProgressPercent] = useState<number | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgressPercent, setExportProgressPercent] = useState<number | null>(null);
+  const [exportProgressClip, setExportProgressClip] = useState<{ current: number; total: number } | null>(null);
   const [usingCompatiblePreview, setUsingCompatiblePreview] = useState(false);
+  const [compatiblePreviewSuggested, setCompatiblePreviewSuggested] = useState(false);
   const previewProxyPathRef = useRef<string | null>(null);
+  const activePreviewJobIdRef = useRef<string | null>(null);
+  const activeExportJobIdRef = useRef<string | null>(null);
+  const previewProgressHideTimerRef = useRef<number | null>(null);
+  const exportProgressHideTimerRef = useRef<number | null>(null);
+  const hasAutoFallbackTriedRef = useRef(false);
 
   const cleanupPreviewProxy = useCallback(async (proxyPath: string | null) => {
     if (!proxyPath) return;
@@ -181,14 +229,134 @@ function App() {
     }
   }, []);
 
+  const clearPreviewProgressTimer = useCallback(() => {
+    if (previewProgressHideTimerRef.current !== null) {
+      window.clearTimeout(previewProgressHideTimerRef.current);
+      previewProgressHideTimerRef.current = null;
+    }
+  }, []);
+
+  const clearExportProgressTimer = useCallback(() => {
+    if (exportProgressHideTimerRef.current !== null) {
+      window.clearTimeout(exportProgressHideTimerRef.current);
+      exportProgressHideTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const handlePreviewProgress = (_event: unknown, payload: unknown) => {
+      if (!isPreviewPrepareProgressPayload(payload)) {
+        return;
+      }
+
+      if (payload.jobId !== activePreviewJobIdRef.current) {
+        return;
+      }
+
+      setPreviewProgressPercent(Math.min(100, Math.max(0, payload.percent)));
+    };
+
+    window.ipcRenderer.on('preview-prepare-progress', handlePreviewProgress);
+    return () => {
+      window.ipcRenderer.off('preview-prepare-progress', handlePreviewProgress);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleExportProgress = (_event: unknown, payload: unknown) => {
+      if (!isBatchExportProgressPayload(payload)) {
+        return;
+      }
+
+      if (payload.jobId !== activeExportJobIdRef.current) {
+        return;
+      }
+
+      setExportProgressPercent(Math.min(100, Math.max(0, payload.percent)));
+      setExportProgressClip({
+        current: payload.currentClip,
+        total: payload.totalClips
+      });
+    };
+
+    window.ipcRenderer.on('batch-export-progress', handleExportProgress);
+    return () => {
+      window.ipcRenderer.off('batch-export-progress', handleExportProgress);
+    };
+  }, []);
+
+  const switchToCompatiblePreview = useCallback(async () => {
+    if (!filePath || isPreparingPreview || usingCompatiblePreview) {
+      return;
+    }
+
+    clearPreviewProgressTimer();
+    const jobId = `preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    activePreviewJobIdRef.current = jobId;
+    setPreviewProgressPercent(0);
+    setIsPreparingPreview(true);
+    let conversionCompleted = false;
+
+    try {
+      const result = await window.ipcRenderer.preparePreview({
+        filePath,
+        forceProxy: true,
+        jobId
+      });
+
+      if (!result.success) {
+        console.warn('Compatible preview generation failed:', result.error);
+        return;
+      }
+
+      if (result.useProxy && result.url && result.path) {
+        if (previewProxyPathRef.current) {
+          const stalePreviewPath = previewProxyPathRef.current;
+          previewProxyPathRef.current = null;
+          void cleanupPreviewProxy(stalePreviewPath);
+        }
+
+        previewProxyPathRef.current = result.path;
+        setVideoSrc(result.url);
+        setUsingCompatiblePreview(true);
+        conversionCompleted = true;
+      }
+    } catch (error) {
+      console.warn('Compatible preview generation failed:', error);
+    } finally {
+      setIsPreparingPreview(false);
+
+      if (activePreviewJobIdRef.current === jobId) {
+        if (!conversionCompleted) {
+          activePreviewJobIdRef.current = null;
+          setPreviewProgressPercent(null);
+        } else {
+          setPreviewProgressPercent(100);
+          clearPreviewProgressTimer();
+          previewProgressHideTimerRef.current = window.setTimeout(() => {
+            if (activePreviewJobIdRef.current === jobId) {
+              activePreviewJobIdRef.current = null;
+              setPreviewProgressPercent(null);
+            }
+            previewProgressHideTimerRef.current = null;
+          }, 350);
+        }
+      }
+    }
+  }, [cleanupPreviewProxy, clearPreviewProgressTimer, filePath, isPreparingPreview, usingCompatiblePreview]);
+
   // Cleanup preview proxy when component unmounts
   useEffect(() => {
     return () => {
+      clearPreviewProgressTimer();
+      clearExportProgressTimer();
+      activePreviewJobIdRef.current = null;
+      activeExportJobIdRef.current = null;
       const stalePreviewPath = previewProxyPathRef.current;
       previewProxyPathRef.current = null;
       void cleanupPreviewProxy(stalePreviewPath);
     };
-  }, [cleanupPreviewProxy]);
+  }, [cleanupPreviewProxy, clearPreviewProgressTimer, clearExportProgressTimer]);
 
   // Prepare playback source when file changes
   useEffect(() => {
@@ -208,7 +376,17 @@ function App() {
     setSegments([]);
     setPendingStart(null);
     setUsingCompatiblePreview(false);
+    setCompatiblePreviewSuggested(false);
     setIsPreparingPreview(false);
+    setIsExporting(false);
+    clearPreviewProgressTimer();
+    clearExportProgressTimer();
+    activePreviewJobIdRef.current = null;
+    activeExportJobIdRef.current = null;
+    setPreviewProgressPercent(null);
+    setExportProgressPercent(null);
+    setExportProgressClip(null);
+    hasAutoFallbackTriedRef.current = false;
 
     if (!videoFile) {
       setVideoSrc("");
@@ -222,17 +400,20 @@ function App() {
     if (electronPath) {
       setFilePath(electronPath);
       setVideoSrc(toFileUrl(electronPath));
-      setIsPreparingPreview(true);
 
-      window.ipcRenderer.preparePreview({ filePath: electronPath })
+      window.ipcRenderer.preparePreview({
+        filePath: electronPath,
+        forceProxy: false
+      })
         .then((result) => {
           if (cancelled) return;
-          setIsPreparingPreview(false);
 
           if (!result.success) {
             console.warn('Preview preparation failed:', result.error);
             return;
           }
+
+          setCompatiblePreviewSuggested(Boolean(result.suggestCompatibleMode));
 
           if (result.useProxy && result.url && result.path) {
             previewProxyPathRef.current = result.path;
@@ -242,7 +423,6 @@ function App() {
         })
         .catch((error) => {
           if (cancelled) return;
-          setIsPreparingPreview(false);
           console.warn('Preview preparation failed:', error);
         });
     } else {
@@ -257,7 +437,7 @@ function App() {
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [videoFile, cleanupPreviewProxy]);
+  }, [videoFile, cleanupPreviewProxy, clearExportProgressTimer, clearPreviewProgressTimer]);
 
 
   const handleDurationChange = (d: number) => {
@@ -332,6 +512,20 @@ function App() {
   const deleteSegment = (id: string) => {
     setSegments(prev => prev.filter(s => s.id !== id));
   };
+
+  const handleDecodeIssue = useCallback((issue: { type: 'decode-error' | 'src-not-supported'; code?: number }) => {
+    if (usingCompatiblePreview || isPreparingPreview || !filePath) {
+      return;
+    }
+
+    if (hasAutoFallbackTriedRef.current) {
+      return;
+    }
+    hasAutoFallbackTriedRef.current = true;
+
+    console.warn('Detected preview decode issue, switching to compatible preview...', issue);
+    void switchToCompatiblePreview();
+  }, [filePath, isPreparingPreview, switchToCompatiblePreview, usingCompatiblePreview]);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -499,6 +693,50 @@ function App() {
         </div>
       )}
 
+      {isPreparingPreview && previewProgressPercent !== null && (
+        <div className="fixed top-16 right-5 z-[95] pointer-events-none">
+          <div className="w-72 rounded-xl border border-white/10 bg-zinc-900/85 backdrop-blur-xl shadow-2xl p-3">
+            <div className="flex items-center justify-between text-xs mb-2">
+              <span className="text-zinc-200">{t('preparingPreview')}</span>
+              <span className="font-mono text-cyan-300">{Math.round(previewProgressPercent)}%</span>
+            </div>
+            <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400 transition-[width] duration-200"
+                style={{ width: `${Math.min(100, Math.max(0, previewProgressPercent))}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isExporting && exportProgressPercent !== null && (
+        <div className={cn(
+          "fixed right-5 z-[95] pointer-events-none",
+          isPreparingPreview && previewProgressPercent !== null ? "top-36" : "top-16"
+        )}>
+          <div className="w-72 rounded-xl border border-white/10 bg-zinc-900/85 backdrop-blur-xl shadow-2xl p-3">
+            <div className="flex items-center justify-between text-xs mb-2">
+              <span className="text-zinc-200">{t('exportingClips')}</span>
+              <div className="flex items-center gap-2">
+                {exportProgressClip && exportProgressClip.total > 0 && (
+                  <span className="font-mono text-zinc-400">
+                    {Math.min(exportProgressClip.current, exportProgressClip.total)}/{exportProgressClip.total}
+                  </span>
+                )}
+                <span className="font-mono text-emerald-300">{Math.round(exportProgressPercent)}%</span>
+              </div>
+            </div>
+            <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 transition-[width] duration-200"
+                style={{ width: `${Math.min(100, Math.max(0, exportProgressPercent))}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* Main Content */}
       <main className="pt-14 flex-1 flex overflow-hidden">
@@ -537,7 +775,8 @@ function App() {
                   onTimeUpdate={handleTimeUpdate}
                   onDurationChange={handleDurationChange}
                   onEnded={() => setIsPlaying(false)}
-                  externalLoadingText={isPreparingPreview ? t('preparingPreview') : null}
+                  onDecodeIssue={handleDecodeIssue}
+                  externalLoadingText={isPreparingPreview ? `${t('preparingPreview')} ${Math.round(previewProgressPercent ?? 0)}%` : null}
                 />
 
               </div>
@@ -548,6 +787,16 @@ function App() {
                 <div className="flex items-center justify-between text-xs text-zinc-400 font-mono">
                   <span>{t('runningTime')}: {formatTime(currentTime)}</span>
                   <div className="flex items-center gap-3">
+                    {!usingCompatiblePreview && compatiblePreviewSuggested && (
+                      <Button
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px] text-amber-400 hover:text-amber-300"
+                        onClick={() => void switchToCompatiblePreview()}
+                        disabled={isPreparingPreview}
+                      >
+                        {t('useCompatiblePreview')}
+                      </Button>
+                    )}
                     {usingCompatiblePreview && (
                       <span className="text-amber-400">{t('compatiblePreviewMode')}</span>
                     )}
@@ -652,7 +901,7 @@ function App() {
               <div className="p-4 border-t border-white/5 bg-zinc-900">
                 <Button
                   className="w-full"
-                  disabled={segments.length === 0}
+                  disabled={segments.length === 0 || isExporting}
                   onClick={async () => {
                     console.log("Export button clicked");
                     try {
@@ -668,30 +917,55 @@ function App() {
 
                       if (!outputDir) return;
 
-                      const btn = document.activeElement as HTMLButtonElement;
-                      if (btn) btn.disabled = true;
-                      const originalText = btn.innerText;
-                      btn.innerText = t('exporting');
+                      const jobId = `export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                      clearExportProgressTimer();
+                      activeExportJobIdRef.current = jobId;
+                      setExportProgressPercent(0);
+                      setExportProgressClip({ current: 0, total: segments.length });
+                      setIsExporting(true);
+                      let exportCompleted = false;
 
                       try {
                         const res = await window.ipcRenderer.processBatch({
                           filePath,
                           outputDir,
-                          segments
+                          segments,
+                          jobId
                         });
                         if (res.success) {
+                          exportCompleted = true;
                           alert(t('exportSuccess', { count: res.results.length }));
                         } else {
                           alert(t('exportFailed'));
                         }
                       } finally {
-                        if (btn) {
-                          btn.disabled = false;
-                          btn.innerText = originalText;
+                        setIsExporting(false);
+                        if (activeExportJobIdRef.current === jobId) {
+                          if (exportCompleted) {
+                            setExportProgressPercent(100);
+                            clearExportProgressTimer();
+                            exportProgressHideTimerRef.current = window.setTimeout(() => {
+                              if (activeExportJobIdRef.current === jobId) {
+                                activeExportJobIdRef.current = null;
+                                setExportProgressPercent(null);
+                                setExportProgressClip(null);
+                              }
+                              exportProgressHideTimerRef.current = null;
+                            }, 400);
+                          } else {
+                            activeExportJobIdRef.current = null;
+                            setExportProgressPercent(null);
+                            setExportProgressClip(null);
+                          }
                         }
                       }
                     } catch (error: unknown) {
                       const errorMessage = error instanceof Error ? error.message : String(error);
+                      setIsExporting(false);
+                      activeExportJobIdRef.current = null;
+                      clearExportProgressTimer();
+                      setExportProgressPercent(null);
+                      setExportProgressClip(null);
                       console.error("Export error:", error);
                       alert(t('exportError') + errorMessage);
                     }
@@ -699,7 +973,7 @@ function App() {
 
                 >
                   <Download className="w-4 h-4" />
-                  {t('exportAll')}
+                  {isExporting ? `${t('exporting')} ${Math.round(exportProgressPercent ?? 0)}%` : t('exportAll')}
                 </Button>
               </div>
             </div>

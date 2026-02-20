@@ -20,7 +20,8 @@ interface Window {
     processBatch: (opts: {
       filePath: string,
       outputDir: string,
-      segments: { start: number, end: number, id: string }[]
+      segments: { start: number, end: number, id: string }[],
+      jobId?: string
     }) => Promise<{
       success: boolean;
       results: Array<{
@@ -32,12 +33,15 @@ interface Window {
     }>;
 
     preparePreview: (opts: {
-      filePath: string
+      filePath: string;
+      forceProxy?: boolean;
+      jobId?: string;
     }) => Promise<{
       success: boolean;
       useProxy: boolean;
       url?: string;
       path?: string;
+      suggestCompatibleMode?: boolean;
       error?: string;
     }>;
 

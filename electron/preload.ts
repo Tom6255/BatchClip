@@ -23,11 +23,14 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   processBatch: (opts: {
     filePath: string,
     outputDir: string,
-    segments: { start: number, end: number, id: string }[]
+    segments: { start: number, end: number, id: string }[],
+    jobId?: string
   }) => ipcRenderer.invoke('process-batch', opts),
 
   preparePreview: (opts: {
-    filePath: string
+    filePath: string,
+    forceProxy?: boolean,
+    jobId?: string
   }) => ipcRenderer.invoke('prepare-preview', opts),
 
   cleanupPreview: (opts: {

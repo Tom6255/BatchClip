@@ -9,6 +9,7 @@ interface VideoPlayerProps {
     onDurationChange: (duration: number) => void;
     onEnded: () => void;
     onPlayPause: () => void;
+    onDecodeIssue?: (issue: { type: 'decode-error' | 'src-not-supported'; code?: number }) => void;
     volume?: number;
     externalLoadingText?: string | null;
 }
@@ -25,6 +26,7 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     onDurationChange,
     onEnded,
     onPlayPause,
+    onDecodeIssue,
     volume = 1,
     externalLoadingText = null
 }, ref) => {
@@ -32,6 +34,7 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [hasLoadedData, setHasLoadedData] = useState(false);
+    const hasReportedDecodeIssue = useRef(false);
 
     useImperativeHandle(ref, () => ({
         seekTo: (time: number) => {
@@ -47,6 +50,7 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
         setIsLoading(true);
         setHasLoadedData(false);
         setError(null);
+        hasReportedDecodeIssue.current = false;
     }, [src]);
 
     useEffect(() => {
@@ -95,6 +99,17 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
                     setError(`视频加载失败：${errorMessage || '未知错误'}`);
             }
             setIsLoading(false);
+
+            // Only escalate for explicit decode/format failures.
+            if (!hasReportedDecodeIssue.current && onDecodeIssue) {
+                if (errorCode === MediaError.MEDIA_ERR_DECODE) {
+                    hasReportedDecodeIssue.current = true;
+                    onDecodeIssue({ type: 'decode-error', code: errorCode });
+                } else if (errorCode === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+                    hasReportedDecodeIssue.current = true;
+                    onDecodeIssue({ type: 'src-not-supported', code: errorCode });
+                }
+            }
         }
     };
 

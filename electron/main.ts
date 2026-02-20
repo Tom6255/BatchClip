@@ -44,11 +44,30 @@ type ProbeVideoStream = {
   pix_fmt?: string
 }
 
+type ProbeVideoInfo = {
+  stream: ProbeVideoStream | null
+  durationSec: number | null
+}
+
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message
   }
   return String(error)
+}
+
+function parseTimemarkToSeconds(timemark: string): number | null {
+  const match = timemark.match(/^(\d+):(\d+):(\d+(?:\.\d+)?)$/)
+  if (!match) return null
+
+  const hours = Number(match[1])
+  const minutes = Number(match[2])
+  const seconds = Number(match[3])
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) {
+    return null
+  }
+
+  return hours * 3600 + minutes * 60 + seconds
 }
 
 function runFfmpegCommand(command: ffmpeg.FfmpegCommand): Promise<void> {
@@ -57,16 +76,39 @@ function runFfmpegCommand(command: ffmpeg.FfmpegCommand): Promise<void> {
   })
 }
 
-function parseVideoStreamFromFfmpegOutput(stderrOutput: string): ProbeVideoStream | null {
-  const videoLine = stderrOutput
+function parseProbeInfoFromFfmpegOutput(stderrOutput: string): ProbeVideoInfo {
+  const lines = stderrOutput
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find((line) => line.includes('Video:'))
 
-  if (!videoLine) return null
+  const videoLine = lines.find((line) => line.includes('Video:'))
+  const durationLine = lines.find((line) => line.startsWith('Duration:'))
+  let durationSec: number | null = null
+
+  if (durationLine) {
+    const durationMatch = durationLine.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/)
+    if (durationMatch) {
+      const parsed = parseTimemarkToSeconds(`${durationMatch[1]}:${durationMatch[2]}:${durationMatch[3]}`)
+      if (parsed !== null) {
+        durationSec = parsed
+      }
+    }
+  }
+
+  if (!videoLine) {
+    return {
+      stream: null,
+      durationSec
+    }
+  }
 
   const markerIndex = videoLine.indexOf('Video:')
-  if (markerIndex === -1) return null
+  if (markerIndex === -1) {
+    return {
+      stream: null,
+      durationSec
+    }
+  }
 
   const payload = videoLine.slice(markerIndex + 'Video:'.length).trim()
   const parts = payload.split(',').map((part) => part.trim())
@@ -78,13 +120,16 @@ function parseVideoStreamFromFfmpegOutput(stderrOutput: string): ProbeVideoStrea
   const pix_fmt = secondPart.split(/[\s(]/)[0]?.toLowerCase()
 
   return {
-    codec_name: codec_name || undefined,
-    profile: profileMatch?.[1],
-    pix_fmt: pix_fmt || undefined
+    stream: {
+      codec_name: codec_name || undefined,
+      profile: profileMatch?.[1],
+      pix_fmt: pix_fmt || undefined
+    },
+    durationSec
   }
 }
 
-function probeFirstVideoStream(filePath: string): Promise<ProbeVideoStream | null> {
+function probeVideoInfo(filePath: string): Promise<ProbeVideoInfo> {
   return new Promise((resolve, reject) => {
     const args = ['-hide_banner', '-i', filePath]
     const probeProcess = spawn(ffmpegPath, args, {
@@ -103,7 +148,7 @@ function probeFirstVideoStream(filePath: string): Promise<ProbeVideoStream | nul
 
     // ffmpeg -i exits with non-zero when no output is specified; still usable for stream parsing.
     probeProcess.once('close', () => {
-      resolve(parseVideoStreamFromFfmpegOutput(stderrOutput))
+      resolve(parseProbeInfoFromFfmpegOutput(stderrOutput))
     })
   })
 }
@@ -118,7 +163,11 @@ function shouldUsePreviewProxy(stream: ProbeVideoStream | null): boolean {
   return codec === 'hevc' || codec === 'h265' || profile.includes('main 10') || pixelFormat.includes('10')
 }
 
-async function createPreviewProxy(filePath: string): Promise<string> {
+async function createPreviewProxy(filePath: string, options?: {
+  durationSec?: number | null
+  onProgress?: (percent: number) => void
+}): Promise<string> {
+  const { durationSec = null, onProgress } = options ?? {}
   const previewDir = path.join(app.getPath('temp'), 'batchclip-preview')
   await fs.promises.mkdir(previewDir, { recursive: true })
 
@@ -139,6 +188,23 @@ async function createPreviewProxy(filePath: string): Promise<string> {
       '-movflags', '+faststart',
       '-vf', 'scale=min(1920\\,iw):-2'
     ])
+    .on('start', () => {
+      onProgress?.(0)
+    })
+    .on('progress', (progress) => {
+      let percent = typeof progress.percent === 'number' ? progress.percent : null
+
+      if ((percent === null || !Number.isFinite(percent)) && durationSec && durationSec > 0) {
+        const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+        if (processedSeconds !== null) {
+          percent = (processedSeconds / durationSec) * 100
+        }
+      }
+
+      if (percent !== null && Number.isFinite(percent)) {
+        onProgress?.(Math.min(100, Math.max(0, percent)))
+      }
+    })
 
   await runFfmpegCommand(command)
   previewProxyPaths.add(proxyPath)
@@ -243,29 +309,66 @@ ipcMain.handle('show-open-dialog', async () => {
   return filePaths[0] || null;
 });
 
-ipcMain.handle('prepare-preview', async (_event, { filePath }) => {
+ipcMain.handle('prepare-preview', async (event, { filePath, forceProxy = false, jobId }) => {
   if (!filePath || typeof filePath !== 'string') {
     return { success: false, useProxy: false, error: 'Invalid file path' }
   }
 
   try {
-    const stream = await probeFirstVideoStream(filePath)
+    const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+    let lastReportedProgress = -1
+    const emitProgress = (phase: 'start' | 'progress' | 'done', percent: number) => {
+      if (!progressJobId) return
 
-    if (!shouldUsePreviewProxy(stream)) {
+      const clampedPercent = Math.min(100, Math.max(0, percent))
+      const rounded = Math.round(clampedPercent)
+      if (phase === 'progress' && rounded === lastReportedProgress) {
+        return
+      }
+
+      if (phase === 'progress') {
+        lastReportedProgress = rounded
+      }
+
+      event.sender.send('preview-prepare-progress', {
+        jobId: progressJobId,
+        phase,
+        percent: rounded
+      })
+    }
+
+    let suggestCompatibleMode = false
+    let probeInfo: ProbeVideoInfo = { stream: null, durationSec: null }
+    try {
+      probeInfo = await probeVideoInfo(filePath)
+      suggestCompatibleMode = shouldUsePreviewProxy(probeInfo.stream)
+    } catch (error) {
+      console.warn('Probe failed, fallback to direct preview decision:', error)
+    }
+
+    // Default strategy: direct preview first. Only transcode when explicitly requested.
+    if (!forceProxy) {
       return {
         success: true,
         useProxy: false,
-        url: pathToFileURL(filePath).toString()
+        url: pathToFileURL(filePath).toString(),
+        suggestCompatibleMode
       }
     }
 
-    const proxyPath = await createPreviewProxy(filePath)
+    emitProgress('start', 0)
+    const proxyPath = await createPreviewProxy(filePath, {
+      durationSec: probeInfo.durationSec,
+      onProgress: (percent) => emitProgress('progress', percent)
+    })
+    emitProgress('done', 100)
 
     return {
       success: true,
       useProxy: true,
       path: proxyPath,
-      url: pathToFileURL(proxyPath).toString()
+      url: pathToFileURL(proxyPath).toString(),
+      suggestCompatibleMode
     }
   } catch (error: unknown) {
     console.error('Failed to prepare preview source:', error)
@@ -290,10 +393,35 @@ ipcMain.handle('cleanup-preview', async (_event, { proxyPath }) => {
   }
 })
 
-ipcMain.handle('process-batch', async (_event, { filePath, outputDir, segments }) => {
+ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, jobId }) => {
   // segments: { start, end, id }[]
   const results = [];
   console.log(`Batch processing ${segments.length} clips from: ${filePath}`);
+
+  const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+  let lastReportedProgress = -1
+  const emitExportProgress = (phase: 'start' | 'progress' | 'done', percent: number, currentClip = 0, totalClips = segments.length) => {
+    if (!progressJobId) return
+
+    const clampedPercent = Math.min(100, Math.max(0, percent))
+    const rounded = Math.round(clampedPercent)
+    if (phase === 'progress' && rounded === lastReportedProgress) {
+      return
+    }
+    if (phase === 'progress') {
+      lastReportedProgress = rounded
+    }
+
+    event.sender.send('batch-export-progress', {
+      jobId: progressJobId,
+      phase,
+      percent: rounded,
+      currentClip,
+      totalClips
+    })
+  }
+
+  emitExportProgress('start', 0, 0, segments.length)
 
   // Ensure output dir exists
   await fs.promises.mkdir(outputDir, { recursive: true });
@@ -303,12 +431,16 @@ ipcMain.handle('process-batch', async (_event, { filePath, outputDir, segments }
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     const duration = seg.end - seg.start;
+    const clipIndex = i + 1
+    const segmentStartPercent = (i / Math.max(segments.length, 1)) * 100
+    const segmentWeight = 100 / Math.max(segments.length, 1)
     // Output name: VideoName_clip_01_Time.mov
     // Use a safe timestamp format or just index
-    const outName = `${baseName}_clip_${(i + 1).toString().padStart(2, '0')}.mov`;
+    const outName = `${baseName}_clip_${clipIndex.toString().padStart(2, '0')}.mov`;
     const tempVidPath = path.join(outputDir, outName);
 
-    console.log(`Processing clip ${i + 1}: ${seg.start}-${seg.end} -> ${outName}`);
+    console.log(`Processing clip ${clipIndex}: ${seg.start}-${seg.end} -> ${outName}`);
+    emitExportProgress('progress', segmentStartPercent, clipIndex, segments.length)
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -322,17 +454,34 @@ ipcMain.handle('process-batch', async (_event, { filePath, outputDir, segments }
             '-movflags', 'use_metadata_tags', // basic flags
             '-pix_fmt', 'yuv420p'
           ])
+          .on('progress', (progress) => {
+            let segmentPercent = typeof progress.percent === 'number' ? progress.percent : null
+            if ((segmentPercent === null || !Number.isFinite(segmentPercent)) && duration > 0) {
+              const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+              if (processedSeconds !== null) {
+                segmentPercent = (processedSeconds / duration) * 100
+              }
+            }
+
+            if (segmentPercent !== null && Number.isFinite(segmentPercent)) {
+              const overallPercent = segmentStartPercent + (Math.min(100, Math.max(0, segmentPercent)) / 100) * segmentWeight
+              emitExportProgress('progress', overallPercent, clipIndex, segments.length)
+            }
+          })
           .on('end', () => resolve())
-          .on('error', (err) => reject(new Error(`Clip ${i + 1} failed: ${err.message}`)))
+          .on('error', (err) => reject(new Error(`Clip ${clipIndex} failed: ${err.message}`)))
           .run();
       });
+      emitExportProgress('progress', ((i + 1) / Math.max(segments.length, 1)) * 100, clipIndex, segments.length)
       results.push({ id: seg.id, success: true, path: tempVidPath });
     } catch (error: unknown) {
       const errorMessage = getErrorMessage(error)
-      console.error(`Error processing clip ${i + 1}:`, error);
+      console.error(`Error processing clip ${clipIndex}:`, error);
+      emitExportProgress('progress', ((i + 1) / Math.max(segments.length, 1)) * 100, clipIndex, segments.length)
       results.push({ id: seg.id, success: false, error: errorMessage });
     }
   }
 
+  emitExportProgress('done', 100, segments.length, segments.length)
   return { success: true, results };
 });
