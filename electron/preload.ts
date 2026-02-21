@@ -29,6 +29,14 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     jobId?: string
   }) => ipcRenderer.invoke('process-batch', opts),
 
+  processLutFullBatch: (opts: {
+    videos: { id: string, filePath: string }[],
+    outputDir: string,
+    lutPath: string,
+    lutIntensity?: number,
+    jobId?: string
+  }) => ipcRenderer.invoke('process-lut-full-batch', opts),
+
   preparePreview: (opts: {
     filePath: string,
     forceProxy?: boolean,

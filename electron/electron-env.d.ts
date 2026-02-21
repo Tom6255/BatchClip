@@ -34,6 +34,22 @@ interface Window {
       }>;
     }>;
 
+    processLutFullBatch: (opts: {
+      videos: { id: string; filePath: string }[];
+      outputDir: string;
+      lutPath: string;
+      lutIntensity?: number;
+      jobId?: string;
+    }) => Promise<{
+      success: boolean;
+      results: Array<{
+        id: string;
+        success: boolean;
+        path?: string;
+        error?: string;
+      }>;
+    }>;
+
     preparePreview: (opts: {
       filePath: string;
       forceProxy?: boolean;

@@ -1,8 +1,8 @@
 {
-  "name": "video2livephoto",
+  "name": "batchclip",
   "private": true,
-  "version": "1.0.0",
-  "description": "一款用于从视频中快速截取多个短片段的桌面应用，特别适合为 Live Photo 准备素材",
+  "version": "1.0.1",
+  "description": "BatchClip - 视频批量剪辑与 LUT 导出工具",
   "author": "Tom6255",
   "type": "module",
   "scripts": {
@@ -52,3 +52,4 @@
   },
   "main": "dist-electron/main.js"
 }
+

@@ -1,13 +1,35 @@
 import { defineConfig } from 'vite'
 import path from 'node:path'
-import electron from 'vite-plugin-electron/simple'
+import electronSimpleImport from 'vite-plugin-electron/simple'
 import react from '@vitejs/plugin-react'
+
+type ElectronSimpleFactory = (options: unknown) => unknown
+
+const resolveElectronSimple = (): ElectronSimpleFactory => {
+  if (typeof electronSimpleImport === 'function') {
+    return electronSimpleImport as ElectronSimpleFactory
+  }
+
+  const firstDefault = (electronSimpleImport as { default?: unknown }).default
+  if (typeof firstDefault === 'function') {
+    return firstDefault as ElectronSimpleFactory
+  }
+
+  const secondDefault = (firstDefault as { default?: unknown } | undefined)?.default
+  if (typeof secondDefault === 'function') {
+    return secondDefault as ElectronSimpleFactory
+  }
+
+  throw new TypeError('Failed to resolve vite-plugin-electron/simple export')
+}
+
+const electronSimple = resolveElectronSimple()
 
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
     react(),
-    electron({
+    electronSimple({
       main: {
         // Shortcut of `build.lib.entry`.
         entry: 'electron/main.ts',
