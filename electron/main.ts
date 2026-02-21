@@ -30,6 +30,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 
 let win: BrowserWindow | null
 const previewProxyPaths = new Set<string>()
+const probeInfoCache = new Map<string, ProbeCacheEntry>()
 
 // On macOS, force software rendering for better compatibility with problematic media decoders.
 // Set BATCHCLIP_FORCE_HW_ACCEL=1 to opt back in to hardware acceleration.
@@ -48,6 +49,42 @@ type ProbeVideoInfo = {
   stream: ProbeVideoStream | null
   durationSec: number | null
 }
+
+type ProbeCacheEntry = {
+  size: number
+  mtimeMs: number
+  info: ProbeVideoInfo
+}
+
+type PreviewEncoderConfig = {
+  name: string
+  videoCodec: string
+  outputOptions: string[]
+}
+
+const PREVIEW_COMMON_OUTPUT_OPTIONS = [
+  '-map', '0:v:0',
+  '-map', '0:a:0?',
+  '-pix_fmt', 'yuv420p',
+  '-movflags', '+faststart',
+  '-vf', 'scale=min(1920\\,iw):-2'
+]
+
+const PREVIEW_SOFTWARE_ENCODER: PreviewEncoderConfig = {
+  name: 'libx264',
+  videoCodec: 'libx264',
+  outputOptions: ['-preset', 'veryfast', '-crf', '23']
+}
+
+const PREVIEW_DARWIN_HW_ENCODER: PreviewEncoderConfig = {
+  name: 'h264_videotoolbox',
+  videoCodec: 'h264_videotoolbox',
+  outputOptions: ['-allow_sw', '1', '-b:v', '6M', '-maxrate', '10M', '-bufsize', '20M']
+}
+
+const EXPORT_PRIMARY_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET || 'fast'
+const EXPORT_FALLBACK_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET_FALLBACK || 'medium'
+const MAX_PROBE_CACHE_ENTRIES = 128
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -129,7 +166,52 @@ function parseProbeInfoFromFfmpegOutput(stderrOutput: string): ProbeVideoInfo {
   }
 }
 
-function probeVideoInfo(filePath: string): Promise<ProbeVideoInfo> {
+function pruneProbeCacheIfNeeded(): void {
+  while (probeInfoCache.size > MAX_PROBE_CACHE_ENTRIES) {
+    const oldestKey = probeInfoCache.keys().next().value as string | undefined
+    if (!oldestKey) break
+    probeInfoCache.delete(oldestKey)
+  }
+}
+
+async function readProbeCache(filePath: string): Promise<ProbeVideoInfo | null> {
+  try {
+    const stat = await fs.promises.stat(filePath)
+    const cached = probeInfoCache.get(filePath)
+    if (!cached) {
+      return null
+    }
+
+    if (cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      return cached.info
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
+async function writeProbeCache(filePath: string, info: ProbeVideoInfo): Promise<void> {
+  try {
+    const stat = await fs.promises.stat(filePath)
+    probeInfoCache.set(filePath, {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      info
+    })
+    pruneProbeCacheIfNeeded()
+  } catch {
+    // Ignore cache write failures
+  }
+}
+
+async function probeVideoInfo(filePath: string): Promise<ProbeVideoInfo> {
+  const cached = await readProbeCache(filePath)
+  if (cached) {
+    return cached
+  }
+
   return new Promise((resolve, reject) => {
     const args = ['-hide_banner', '-i', filePath]
     const probeProcess = spawn(ffmpegPath, args, {
@@ -148,7 +230,9 @@ function probeVideoInfo(filePath: string): Promise<ProbeVideoInfo> {
 
     // ffmpeg -i exits with non-zero when no output is specified; still usable for stream parsing.
     probeProcess.once('close', () => {
-      resolve(parseProbeInfoFromFfmpegOutput(stderrOutput))
+      const info = parseProbeInfoFromFfmpegOutput(stderrOutput)
+      void writeProbeCache(filePath, info)
+      resolve(info)
     })
   })
 }
@@ -163,6 +247,16 @@ function shouldUsePreviewProxy(stream: ProbeVideoStream | null): boolean {
   return codec === 'hevc' || codec === 'h265' || profile.includes('main 10') || pixelFormat.includes('10')
 }
 
+async function removeFileIfExists(filePath: string): Promise<void> {
+  try {
+    await fs.promises.unlink(filePath)
+  } catch (error: unknown) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) {
+      console.warn(`Failed to remove file: ${filePath}`, error)
+    }
+  }
+}
+
 async function createPreviewProxy(filePath: string, options?: {
   durationSec?: number | null
   onProgress?: (percent: number) => void
@@ -173,42 +267,102 @@ async function createPreviewProxy(filePath: string, options?: {
 
   const baseName = path.basename(filePath, path.extname(filePath))
   const proxyPath = path.join(previewDir, `${baseName}_preview_${Date.now()}.mp4`)
+  const encoderAttempts = process.platform === 'darwin'
+    ? [PREVIEW_DARWIN_HW_ENCODER, PREVIEW_SOFTWARE_ENCODER]
+    : [PREVIEW_SOFTWARE_ENCODER]
 
-  const command = ffmpeg(filePath)
-    .output(proxyPath)
-    .videoCodec('libx264')
-    .audioCodec('aac')
-    .audioBitrate('192k')
-    .outputOptions([
-      '-map', '0:v:0',
-      '-map', '0:a:0?',
-      '-preset', 'veryfast',
-      '-crf', '23',
-      '-pix_fmt', 'yuv420p',
-      '-movflags', '+faststart',
-      '-vf', 'scale=min(1920\\,iw):-2'
-    ])
-    .on('start', () => {
-      onProgress?.(0)
-    })
-    .on('progress', (progress) => {
-      let percent = typeof progress.percent === 'number' ? progress.percent : null
+  let lastErrorMessage = 'Failed to build preview proxy'
 
-      if ((percent === null || !Number.isFinite(percent)) && durationSec && durationSec > 0) {
-        const processedSeconds = parseTimemarkToSeconds(progress.timemark)
-        if (processedSeconds !== null) {
-          percent = (processedSeconds / durationSec) * 100
+  for (let index = 0; index < encoderAttempts.length; index++) {
+    const encoder = encoderAttempts[index]
+
+    const command = ffmpeg(filePath)
+      .output(proxyPath)
+      .videoCodec(encoder.videoCodec)
+      .audioCodec('aac')
+      .audioBitrate('192k')
+      .outputOptions([...PREVIEW_COMMON_OUTPUT_OPTIONS, ...encoder.outputOptions])
+      .on('start', () => {
+        onProgress?.(0)
+      })
+      .on('progress', (progress) => {
+        let percent = typeof progress.percent === 'number' ? progress.percent : null
+
+        if ((percent === null || !Number.isFinite(percent)) && durationSec && durationSec > 0) {
+          const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+          if (processedSeconds !== null) {
+            percent = (processedSeconds / durationSec) * 100
+          }
         }
-      }
 
-      if (percent !== null && Number.isFinite(percent)) {
-        onProgress?.(Math.min(100, Math.max(0, percent)))
-      }
-    })
+        if (percent !== null && Number.isFinite(percent)) {
+          onProgress?.(Math.min(100, Math.max(0, percent)))
+        }
+      })
 
-  await runFfmpegCommand(command)
-  previewProxyPaths.add(proxyPath)
-  return proxyPath
+    try {
+      await runFfmpegCommand(command)
+      previewProxyPaths.add(proxyPath)
+      return proxyPath
+    } catch (error: unknown) {
+      lastErrorMessage = getErrorMessage(error)
+      await removeFileIfExists(proxyPath)
+
+      if (index < encoderAttempts.length - 1) {
+        console.warn(`[BatchClip] Preview proxy encoder "${encoder.name}" failed, trying fallback.`, error)
+      }
+    }
+  }
+
+  throw new Error(lastErrorMessage)
+}
+
+async function exportSingleClip(options: {
+  filePath: string
+  startSec: number
+  durationSec: number
+  outputPath: string
+  x264Preset: string
+  onProgress?: (percent: number) => void
+}): Promise<void> {
+  const {
+    filePath,
+    startSec,
+    durationSec,
+    outputPath,
+    x264Preset,
+    onProgress
+  } = options
+
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(filePath)
+      .setStartTime(startSec)
+      .setDuration(durationSec)
+      .output(outputPath)
+      .videoCodec('libx264')
+      .audioCodec('aac')
+      .outputOptions([
+        '-preset', x264Preset,
+        '-movflags', 'use_metadata_tags',
+        '-pix_fmt', 'yuv420p'
+      ])
+      .on('progress', (progress) => {
+        let segmentPercent = typeof progress.percent === 'number' ? progress.percent : null
+        if ((segmentPercent === null || !Number.isFinite(segmentPercent)) && durationSec > 0) {
+          const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+          if (processedSeconds !== null) {
+            segmentPercent = (processedSeconds / durationSec) * 100
+          }
+        }
+
+        if (segmentPercent !== null && Number.isFinite(segmentPercent)) {
+          onProgress?.(Math.min(100, Math.max(0, segmentPercent)))
+        }
+      })
+      .on('end', () => resolve())
+      .on('error', (err) => reject(err))
+      .run()
+  })
 }
 
 async function cleanupPreviewProxy(proxyPath: string): Promise<void> {
@@ -443,40 +597,57 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, j
     emitExportProgress('progress', segmentStartPercent, clipIndex, segments.length)
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        ffmpeg(filePath)
-          .setStartTime(seg.start)
-          .setDuration(duration)
-          .output(tempVidPath)
-          .videoCodec('libx264')
-          .audioCodec('aac')
-          .outputOptions([
-            '-movflags', 'use_metadata_tags', // basic flags
-            '-pix_fmt', 'yuv420p'
-          ])
-          .on('progress', (progress) => {
-            let segmentPercent = typeof progress.percent === 'number' ? progress.percent : null
-            if ((segmentPercent === null || !Number.isFinite(segmentPercent)) && duration > 0) {
-              const processedSeconds = parseTimemarkToSeconds(progress.timemark)
-              if (processedSeconds !== null) {
-                segmentPercent = (processedSeconds / duration) * 100
-              }
-            }
+      let maxSegmentPercent = 0
+      const emitSegmentProgress = (segmentPercent: number) => {
+        maxSegmentPercent = Math.max(maxSegmentPercent, Math.min(100, Math.max(0, segmentPercent)))
+        const overallPercent = segmentStartPercent + (maxSegmentPercent / 100) * segmentWeight
+        emitExportProgress('progress', overallPercent, clipIndex, segments.length)
+      }
 
-            if (segmentPercent !== null && Number.isFinite(segmentPercent)) {
-              const overallPercent = segmentStartPercent + (Math.min(100, Math.max(0, segmentPercent)) / 100) * segmentWeight
-              emitExportProgress('progress', overallPercent, clipIndex, segments.length)
-            }
+      try {
+        await exportSingleClip({
+          filePath,
+          startSec: seg.start,
+          durationSec: duration,
+          outputPath: tempVidPath,
+          x264Preset: EXPORT_PRIMARY_X264_PRESET,
+          onProgress: emitSegmentProgress
+        })
+      } catch (primaryError) {
+        const primaryErrorMessage = getErrorMessage(primaryError)
+        console.warn(
+          `[BatchClip] Clip ${clipIndex} export failed with preset "${EXPORT_PRIMARY_X264_PRESET}", retrying with "${EXPORT_FALLBACK_X264_PRESET}".`,
+          primaryError
+        )
+        await removeFileIfExists(tempVidPath)
+
+        if (EXPORT_FALLBACK_X264_PRESET === EXPORT_PRIMARY_X264_PRESET) {
+          throw new Error(primaryErrorMessage)
+        }
+
+        try {
+          await exportSingleClip({
+            filePath,
+            startSec: seg.start,
+            durationSec: duration,
+            outputPath: tempVidPath,
+            x264Preset: EXPORT_FALLBACK_X264_PRESET,
+            onProgress: emitSegmentProgress
           })
-          .on('end', () => resolve())
-          .on('error', (err) => reject(new Error(`Clip ${clipIndex} failed: ${err.message}`)))
-          .run();
-      });
+        } catch (fallbackError) {
+          const fallbackErrorMessage = getErrorMessage(fallbackError)
+          throw new Error(
+            `primary(${EXPORT_PRIMARY_X264_PRESET}): ${primaryErrorMessage}; fallback(${EXPORT_FALLBACK_X264_PRESET}): ${fallbackErrorMessage}`
+          )
+        }
+      }
+
       emitExportProgress('progress', ((i + 1) / Math.max(segments.length, 1)) * 100, clipIndex, segments.length)
       results.push({ id: seg.id, success: true, path: tempVidPath });
     } catch (error: unknown) {
       const errorMessage = getErrorMessage(error)
       console.error(`Error processing clip ${clipIndex}:`, error);
+      await removeFileIfExists(tempVidPath)
       emitExportProgress('progress', ((i + 1) / Math.max(segments.length, 1)) * 100, clipIndex, segments.length)
       results.push({ id: seg.id, success: false, error: errorMessage });
     }

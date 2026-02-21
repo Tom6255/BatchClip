@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type ButtonHTMLAttributes } from 'react';
+import { memo, useState, useRef, useEffect, useCallback, type ButtonHTMLAttributes } from 'react';
 import { Upload, X, Zap, Download, Trash2, Scissors, Settings as SettingsIcon } from 'lucide-react';
 import { cn } from './lib/utils';
 import VideoPlayer, { VideoPlayerRef } from './components/VideoPlayer';
@@ -6,6 +6,7 @@ import Timeline from './components/Timeline';
 import { v4 as uuidv4 } from 'uuid';
 
 const DEFAULT_FIXED_DURATION = 3.9;
+const CURRENT_TIME_COMMIT_INTERVAL_MS = 80;
 
 const toFileUrl = (absolutePath: string) => {
   const normalized = absolutePath.replace(/\\/g, '/');
@@ -111,6 +112,56 @@ interface Segment {
   start: number;
   end: number;
 }
+
+const formatTime = (seconds: number) => {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 100);
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+};
+
+interface SegmentListProps {
+  segments: Segment[];
+  clipLabel: string;
+  emptyLabel: string;
+  onDeleteSegment: (id: string) => void;
+}
+
+const SegmentList = memo(function SegmentList({ segments, clipLabel, emptyLabel, onDeleteSegment }: SegmentListProps) {
+  if (segments.length === 0) {
+    return (
+      <div className="text-center text-zinc-500 py-10 text-sm">
+        {emptyLabel}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {segments.map((seg, idx) => (
+        <div key={seg.id} className="bg-zinc-950 p-3 rounded border border-white/5 flex items-center gap-3 group">
+          <div className="w-6 h-6 rounded-full bg-blue-900/50 text-blue-400 flex items-center justify-center text-xs font-mono">
+            {idx + 1}
+          </div>
+          <div className="flex-1">
+            <div className="text-sm font-medium text-zinc-300">
+              {clipLabel} {idx + 1}
+            </div>
+            <div className="text-xs text-zinc-500 font-mono">
+              {formatTime(seg.start)} - {formatTime(seg.end)}
+            </div>
+          </div>
+          <button
+            className="p-2 text-zinc-600 hover:text-red-500 transition-colors"
+            onClick={() => onDeleteSegment(seg.id)}
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      ))}
+    </>
+  );
+});
 
 interface PreviewPrepareProgressPayload {
   jobId: string;
@@ -218,6 +269,43 @@ function App() {
   const previewProgressHideTimerRef = useRef<number | null>(null);
   const exportProgressHideTimerRef = useRef<number | null>(null);
   const hasAutoFallbackTriedRef = useRef(false);
+  const currentTimeRef = useRef(0);
+  const pendingStartRef = useRef<number | null>(null);
+  const lastCurrentTimeCommitRef = useRef(0);
+
+  const setPendingStartState = useCallback((value: number | null) => {
+    pendingStartRef.current = value;
+    setPendingStart(value);
+  }, []);
+
+  const addSegment = useCallback((start: number, end: number) => {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return;
+    }
+
+    const normalizedEnd = useFixedDuration && (end - start > defaultDuration)
+      ? start + defaultDuration
+      : end;
+
+    const newSegment: Segment = {
+      id: uuidv4(),
+      start,
+      end: normalizedEnd
+    };
+
+    setSegments((prev) => {
+      const insertIndex = prev.findIndex((segment) => segment.start > newSegment.start);
+      if (insertIndex === -1) {
+        return [...prev, newSegment];
+      }
+      return [
+        ...prev.slice(0, insertIndex),
+        newSegment,
+        ...prev.slice(insertIndex)
+      ];
+    });
+    setPendingStartState(null);
+  }, [defaultDuration, setPendingStartState, useFixedDuration]);
 
   const cleanupPreviewProxy = useCallback(async (proxyPath: string | null) => {
     if (!proxyPath) return;
@@ -352,6 +440,9 @@ function App() {
       clearExportProgressTimer();
       activePreviewJobIdRef.current = null;
       activeExportJobIdRef.current = null;
+      currentTimeRef.current = 0;
+      pendingStartRef.current = null;
+      lastCurrentTimeCommitRef.current = 0;
       const stalePreviewPath = previewProxyPathRef.current;
       previewProxyPathRef.current = null;
       void cleanupPreviewProxy(stalePreviewPath);
@@ -373,8 +464,10 @@ function App() {
     setIsPlaying(false);
     setDuration(0);
     setCurrentTime(0);
+    currentTimeRef.current = 0;
+    lastCurrentTimeCommitRef.current = 0;
     setSegments([]);
-    setPendingStart(null);
+    setPendingStartState(null);
     setUsingCompatiblePreview(false);
     setCompatiblePreviewSuggested(false);
     setIsPreparingPreview(false);
@@ -437,38 +530,20 @@ function App() {
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [videoFile, cleanupPreviewProxy, clearExportProgressTimer, clearPreviewProgressTimer]);
+  }, [videoFile, cleanupPreviewProxy, clearExportProgressTimer, clearPreviewProgressTimer, setPendingStartState]);
 
 
-  const handleDurationChange = (d: number) => {
+  const handleDurationChange = useCallback((d: number) => {
     if (!d || !isFinite(d)) return;
     setDuration(d);
-  };
+  }, []);
 
   const closeSegment = useCallback(() => {
-    if (pendingStart === null) return;
+    const start = pendingStartRef.current;
+    if (start === null) return;
 
-    let end = currentTime;
-
-    // Validate order
-    if (end <= pendingStart) {
-      return;
-    }
-
-    // Clamp max duration if fixed duration is enabled
-    if (useFixedDuration && (end - pendingStart > defaultDuration)) {
-      end = pendingStart + defaultDuration;
-    }
-
-    const newSegment: Segment = {
-      id: uuidv4(),
-      start: pendingStart,
-      end: end
-    };
-
-    setSegments(prev => [...prev, newSegment].sort((a, b) => a.start - b.start));
-    setPendingStart(null);
-  }, [pendingStart, currentTime, useFixedDuration, defaultDuration]);
+    addSegment(start, currentTimeRef.current);
+  }, [addSegment]);
 
   // Keyboard Shortcuts (I/O)
   useEffect(() => {
@@ -477,7 +552,7 @@ function App() {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if (e.key.toLowerCase() === 'i') {
-        setPendingStart(currentTime);
+        setPendingStartState(currentTimeRef.current);
       } else if (e.key.toLowerCase() === 'o') {
         closeSegment();
       } else if (e.code === 'Space') {
@@ -488,30 +563,44 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [videoFile, currentTime, closeSegment]);
+  }, [videoFile, closeSegment, setPendingStartState]);
 
 
   // Time Update Logic (Auto-close)
-  const handleTimeUpdate = (t: number) => {
-    setCurrentTime(t);
+  const handleTimeUpdate = useCallback((t: number) => {
+    currentTimeRef.current = t;
+
+    const now = Date.now();
+    if (now - lastCurrentTimeCommitRef.current >= CURRENT_TIME_COMMIT_INTERVAL_MS) {
+      lastCurrentTimeCommitRef.current = now;
+      setCurrentTime(t);
+    }
 
     // Auto-close logic
-    if (useFixedDuration && pendingStart !== null && (t - pendingStart >= defaultDuration)) {
-      // Force close at precise limit
-      const autoEnd = pendingStart + defaultDuration;
-      const newSegment: Segment = {
-        id: uuidv4(),
-        start: pendingStart,
-        end: autoEnd
-      };
-      setSegments(prev => [...prev, newSegment].sort((a, b) => a.start - b.start));
-      setPendingStart(null);
+    const pendingStartValue = pendingStartRef.current;
+    if (useFixedDuration && pendingStartValue !== null && (t - pendingStartValue >= defaultDuration)) {
+      addSegment(pendingStartValue, pendingStartValue + defaultDuration);
     }
-  };
+  }, [addSegment, defaultDuration, useFixedDuration]);
 
-  const deleteSegment = (id: string) => {
+  const deleteSegment = useCallback((id: string) => {
     setSegments(prev => prev.filter(s => s.id !== id));
-  };
+  }, []);
+
+  const handleSeek = useCallback((t: number) => {
+    videoPlayerRef.current?.seekTo(t);
+    currentTimeRef.current = t;
+    lastCurrentTimeCommitRef.current = Date.now();
+    setCurrentTime(t);
+  }, []);
+
+  const handlePlayPause = useCallback(() => {
+    setIsPlaying(prev => !prev);
+  }, []);
+
+  const handleVideoEnded = useCallback(() => {
+    setIsPlaying(false);
+  }, []);
 
   const handleDecodeIssue = useCallback((issue: { type: 'decode-error' | 'src-not-supported'; code?: number }) => {
     if (usingCompatiblePreview || isPreparingPreview || !filePath) {
@@ -565,12 +654,8 @@ function App() {
     }
   };
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    const ms = Math.floor((seconds % 1) * 100);
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
-  };
+  const clipLabel = t('clip');
+  const noClipsLabel = t('noClips');
 
   return (
     <div
@@ -771,10 +856,10 @@ function App() {
                   ref={videoPlayerRef}
                   src={videoSrc}
                   isPlaying={isPlaying}
-                  onPlayPause={() => setIsPlaying(!isPlaying)}
+                  onPlayPause={handlePlayPause}
                   onTimeUpdate={handleTimeUpdate}
                   onDurationChange={handleDurationChange}
-                  onEnded={() => setIsPlaying(false)}
+                  onEnded={handleVideoEnded}
                   onDecodeIssue={handleDecodeIssue}
                   externalLoadingText={isPreparingPreview ? `${t('preparingPreview')} ${Math.round(previewProgressPercent ?? 0)}%` : null}
                 />
@@ -809,10 +894,7 @@ function App() {
                     currentTime={currentTime}
                     segments={segments}
                     pendingStart={pendingStart}
-                    onSeek={(t) => {
-                      videoPlayerRef.current?.seekTo(t);
-                      setCurrentTime(t); // Optimistic update
-                    }}
+                    onSeek={handleSeek}
                   />
                 </div>
                 <div className="flex items-center gap-4 mt-2">
@@ -832,7 +914,7 @@ function App() {
                     <Button
                       variant="secondary"
                       className="h-8 text-xs font-normal"
-                      onClick={() => setPendingStart(currentTime)}
+                      onClick={() => setPendingStartState(currentTimeRef.current)}
                       disabled={pendingStart !== null}
                     >
                       {t('markIn')} (I)
@@ -869,33 +951,12 @@ function App() {
               </div>
 
               <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
-                {segments.length === 0 ? (
-                  <div className="text-center text-zinc-500 py-10 text-sm">
-                    {t('noClips')}
-                  </div>
-                ) : (
-                  segments.map((seg, idx) => (
-                    <div key={seg.id} className="bg-zinc-950 p-3 rounded border border-white/5 flex items-center gap-3 group">
-                      <div className="w-6 h-6 rounded-full bg-blue-900/50 text-blue-400 flex items-center justify-center text-xs font-mono">
-                        {idx + 1}
-                      </div>
-                      <div className="flex-1">
-                        <div className="text-sm font-medium text-zinc-300">
-                          {t('clip')} {idx + 1}
-                        </div>
-                        <div className="text-xs text-zinc-500 font-mono">
-                          {formatTime(seg.start)} - {formatTime(seg.end)}
-                        </div>
-                      </div>
-                      <button
-                        className="p-2 text-zinc-600 hover:text-red-500 transition-colors"
-                        onClick={() => deleteSegment(seg.id)}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))
-                )}
+                <SegmentList
+                  segments={segments}
+                  clipLabel={clipLabel}
+                  emptyLabel={noClipsLabel}
+                  onDeleteSegment={deleteSegment}
+                />
               </div>
 
               <div className="p-4 border-t border-white/5 bg-zinc-900">
