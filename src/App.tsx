@@ -6,11 +6,25 @@ import Timeline from './components/Timeline';
 import { v4 as uuidv4 } from 'uuid';
 
 const DEFAULT_FIXED_DURATION = 3.9;
+const DEFAULT_LUT_INTENSITY = 100;
 const CURRENT_TIME_COMMIT_INTERVAL_MS = 80;
 
 const toFileUrl = (absolutePath: string) => {
   const normalized = absolutePath.replace(/\\/g, '/');
   return encodeURI(normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`);
+};
+
+const getFileNameFromPath = (absolutePath: string) => {
+  const parts = absolutePath.split(/[\\/]/);
+  const fileName = parts[parts.length - 1];
+  return fileName || absolutePath;
+};
+
+const clampLutIntensity = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_LUT_INTENSITY;
+  }
+  return Math.min(100, Math.max(0, Math.round(value)));
 };
 
 const translations = {
@@ -44,7 +58,20 @@ const translations = {
     exportingClips: 'Exporting clips...',
     preparingPreview: 'Preparing compatible preview...',
     compatiblePreviewMode: 'Compatible Preview Mode',
-    useCompatiblePreview: 'Use Compatible Preview'
+    useCompatiblePreview: 'Use Compatible Preview',
+    preparingLutPreview: 'Preparing LUT preview...',
+    lutPreviewMode: 'LUT Preview Mode',
+    lutSettings: 'LUT Restore',
+    lutFile: 'LUT File',
+    importLut: 'Import .cube',
+    clearLut: 'Clear LUT',
+    lutNotSelected: 'No LUT selected',
+    enableLutPreview: 'Enable LUT Preview',
+    enableLutPreviewDesc: 'Apply LUT in preview and export',
+    lutFileMissing: 'Please import a LUT (.cube) file first.',
+    lutIntensity: 'LUT Intensity',
+    lutIntensityDesc: '0% keeps original, 100% uses full LUT',
+    applyLutIntensity: 'Apply'
   },
   zh: {
     runningTime: '当前进度',
@@ -76,7 +103,20 @@ const translations = {
     exportingClips: '正在导出片段...',
     preparingPreview: '正在生成兼容预览...',
     compatiblePreviewMode: '兼容预览模式',
-    useCompatiblePreview: '启用兼容预览'
+    useCompatiblePreview: '启用兼容预览',
+    preparingLutPreview: '正在生成 LUT 预览...',
+    lutPreviewMode: 'LUT 预览模式',
+    lutSettings: 'LUT 还原',
+    lutFile: 'LUT 文件',
+    importLut: '导入 .cube',
+    clearLut: '清除 LUT',
+    lutNotSelected: '未选择 LUT 文件',
+    enableLutPreview: '启用 LUT 预览',
+    enableLutPreviewDesc: '预览与导出均套用当前 LUT',
+    lutFileMissing: '请先导入 LUT（.cube）文件。',
+    lutIntensity: 'LUT 强度',
+    lutIntensityDesc: '0% 保持原片，100% 完全套用 LUT',
+    applyLutIntensity: '应用'
   }
 };
 
@@ -216,6 +256,26 @@ function App() {
     const saved = localStorage.getItem('language');
     return (saved === 'en' || saved === 'zh') ? saved : 'zh';
   });
+  const [lutFilePath, setLutFilePath] = useState(() => {
+    return localStorage.getItem('lutFilePath') ?? '';
+  });
+  const [enableLutPreview, setEnableLutPreview] = useState(false);
+  const [lutIntensity, setLutIntensity] = useState(() => {
+    const saved = localStorage.getItem('lutIntensity');
+    if (saved === null) {
+      return DEFAULT_LUT_INTENSITY;
+    }
+
+    return clampLutIntensity(Number(saved));
+  });
+  const [lutIntensityDraft, setLutIntensityDraft] = useState(() => {
+    const saved = localStorage.getItem('lutIntensity');
+    if (saved === null) {
+      return DEFAULT_LUT_INTENSITY;
+    }
+
+    return clampLutIntensity(Number(saved));
+  });
 
   // i18n helper
   const t = (key: keyof typeof translations.en, params?: Record<string, string | number>) => {
@@ -240,6 +300,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem('language', language);
   }, [language]);
+
+  useEffect(() => {
+    localStorage.setItem('lutFilePath', lutFilePath);
+  }, [lutFilePath]);
+
+  useEffect(() => {
+    localStorage.setItem('lutIntensity', String(lutIntensity));
+  }, [lutIntensity]);
 
 
   // Video State
@@ -266,12 +334,25 @@ function App() {
   const previewProxyPathRef = useRef<string | null>(null);
   const activePreviewJobIdRef = useRef<string | null>(null);
   const activeExportJobIdRef = useRef<string | null>(null);
+  const isPreparingPreviewRef = useRef(false);
   const previewProgressHideTimerRef = useRef<number | null>(null);
   const exportProgressHideTimerRef = useRef<number | null>(null);
   const hasAutoFallbackTriedRef = useRef(false);
   const currentTimeRef = useRef(0);
   const pendingStartRef = useRef<number | null>(null);
   const lastCurrentTimeCommitRef = useRef(0);
+  const normalizedLutPath = lutFilePath.trim();
+  const normalizedLutIntensity = clampLutIntensity(lutIntensity);
+  const normalizedLutIntensityDraft = clampLutIntensity(lutIntensityDraft);
+  const hasPendingLutIntensity = normalizedLutIntensityDraft !== normalizedLutIntensity;
+  const hasLutFile = normalizedLutPath.length > 0;
+  const shouldApplyLutOnPreview = enableLutPreview && hasLutFile;
+  const shouldApplyLutOnExport = enableLutPreview && hasLutFile;
+  const usingLutPreview = shouldApplyLutOnPreview;
+
+  useEffect(() => {
+    setLutIntensityDraft(normalizedLutIntensity);
+  }, [normalizedLutIntensity]);
 
   const setPendingStartState = useCallback((value: number | null) => {
     pendingStartRef.current = value;
@@ -332,6 +413,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    isPreparingPreviewRef.current = isPreparingPreview;
+  }, [isPreparingPreview]);
+
+  useEffect(() => {
     const handlePreviewProgress = (_event: unknown, payload: unknown) => {
       if (!isPreviewPrepareProgressPayload(payload)) {
         return;
@@ -373,8 +458,8 @@ function App() {
     };
   }, []);
 
-  const switchToCompatiblePreview = useCallback(async () => {
-    if (!filePath || isPreparingPreview || usingCompatiblePreview) {
+  const switchToProxyPreview = useCallback(async () => {
+    if (!filePath || isPreparingPreviewRef.current) {
       return;
     }
 
@@ -382,6 +467,7 @@ function App() {
     const jobId = `preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     activePreviewJobIdRef.current = jobId;
     setPreviewProgressPercent(0);
+    isPreparingPreviewRef.current = true;
     setIsPreparingPreview(true);
     let conversionCompleted = false;
 
@@ -397,6 +483,10 @@ function App() {
         return;
       }
 
+      if (activePreviewJobIdRef.current !== jobId) {
+        return;
+      }
+
       if (result.useProxy && result.url && result.path) {
         if (previewProxyPathRef.current) {
           const stalePreviewPath = previewProxyPathRef.current;
@@ -407,11 +497,13 @@ function App() {
         previewProxyPathRef.current = result.path;
         setVideoSrc(result.url);
         setUsingCompatiblePreview(true);
+
         conversionCompleted = true;
       }
     } catch (error) {
       console.warn('Compatible preview generation failed:', error);
     } finally {
+      isPreparingPreviewRef.current = false;
       setIsPreparingPreview(false);
 
       if (activePreviewJobIdRef.current === jobId) {
@@ -431,7 +523,15 @@ function App() {
         }
       }
     }
-  }, [cleanupPreviewProxy, clearPreviewProgressTimer, filePath, isPreparingPreview, usingCompatiblePreview]);
+  }, [cleanupPreviewProxy, clearPreviewProgressTimer, filePath]);
+
+  const switchToCompatiblePreview = useCallback(() => {
+    if (!filePath || isPreparingPreviewRef.current || usingCompatiblePreview) {
+      return;
+    }
+
+    void switchToProxyPreview();
+  }, [filePath, switchToProxyPreview, usingCompatiblePreview]);
 
   // Cleanup preview proxy when component unmounts
   useEffect(() => {
@@ -440,6 +540,7 @@ function App() {
       clearExportProgressTimer();
       activePreviewJobIdRef.current = null;
       activeExportJobIdRef.current = null;
+      isPreparingPreviewRef.current = false;
       currentTimeRef.current = 0;
       pendingStartRef.current = null;
       lastCurrentTimeCommitRef.current = 0;
@@ -470,6 +571,7 @@ function App() {
     setPendingStartState(null);
     setUsingCompatiblePreview(false);
     setCompatiblePreviewSuggested(false);
+    isPreparingPreviewRef.current = false;
     setIsPreparingPreview(false);
     setIsExporting(false);
     clearPreviewProgressTimer();
@@ -531,7 +633,6 @@ function App() {
       }
     };
   }, [videoFile, cleanupPreviewProxy, clearExportProgressTimer, clearPreviewProgressTimer, setPendingStartState]);
-
 
   const handleDurationChange = useCallback((d: number) => {
     if (!d || !isFinite(d)) return;
@@ -613,7 +714,7 @@ function App() {
     hasAutoFallbackTriedRef.current = true;
 
     console.warn('Detected preview decode issue, switching to compatible preview...', issue);
-    void switchToCompatiblePreview();
+    switchToCompatiblePreview();
   }, [filePath, isPreparingPreview, switchToCompatiblePreview, usingCompatiblePreview]);
 
   const handleDrag = (e: React.DragEvent) => {
@@ -641,6 +742,34 @@ function App() {
     }
   };
 
+  const handleImportLut = useCallback(async () => {
+    try {
+      const selectedLutPath = await window.ipcRenderer.showOpenLutDialog();
+      if (!selectedLutPath) {
+        return;
+      }
+
+      setLutFilePath(selectedLutPath);
+      setEnableLutPreview(true);
+    } catch (error) {
+      console.error('Failed to import LUT file:', error);
+    }
+  }, []);
+
+  const applyLutIntensity = useCallback(() => {
+    if (!hasLutFile || isPreparingPreview) {
+      return;
+    }
+
+    setLutIntensity(normalizedLutIntensityDraft);
+  }, [hasLutFile, isPreparingPreview, normalizedLutIntensityDraft]);
+
+  const clearLutFile = useCallback(() => {
+    setEnableLutPreview(false);
+    setLutFilePath('');
+    setLutIntensityDraft(normalizedLutIntensity);
+  }, [normalizedLutIntensity]);
+
   const handleFiles = (files: FileList) => {
     const file = files[0];
     const fileName = file.name.toLowerCase();
@@ -656,6 +785,8 @@ function App() {
 
   const clipLabel = t('clip');
   const noClipsLabel = t('noClips');
+  const lutFileName = hasLutFile ? getFileNameFromPath(normalizedLutPath) : t('lutNotSelected');
+  const previewLoadingText = t('preparingPreview');
 
   return (
     <div
@@ -742,6 +873,73 @@ function App() {
 
                 <div className="pt-4 border-t border-white/5 space-y-3">
                   <label className="text-sm font-medium text-zinc-200 block">
+                    {t('lutSettings')}
+                  </label>
+
+                  <div className="space-y-3 rounded-lg border border-white/10 bg-zinc-950/40 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[11px] text-zinc-500">{t('lutFile')}</p>
+                        <p className={cn(
+                          "text-xs font-mono truncate mt-1",
+                          hasLutFile ? "text-zinc-200" : "text-zinc-500"
+                        )}>
+                          {lutFileName}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Button
+                          variant="secondary"
+                          className="h-8 px-3 text-xs"
+                          onClick={() => {
+                            void handleImportLut();
+                          }}
+                        >
+                          {t('importLut')}
+                        </Button>
+                        {hasLutFile && (
+                          <Button
+                            variant="ghost"
+                            className="h-8 px-2 text-xs text-zinc-500 hover:text-red-400"
+                            onClick={clearLutFile}
+                          >
+                            {t('clearLut')}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <label className="text-sm font-medium text-zinc-200">{t('enableLutPreview')}</label>
+                        <p className="text-xs text-zinc-500">{t('enableLutPreviewDesc')}</p>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (!hasLutFile) {
+                            alert(t('lutFileMissing'));
+                            return;
+                          }
+                          setEnableLutPreview(!enableLutPreview);
+                        }}
+                        disabled={!hasLutFile}
+                        className={cn(
+                          "w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none",
+                          enableLutPreview ? "bg-blue-600" : "bg-zinc-700",
+                          !hasLutFile && "opacity-50 cursor-not-allowed"
+                        )}
+                      >
+                        <div className={cn(
+                          "w-4 h-4 rounded-full bg-white transition-transform duration-200 mx-1",
+                          enableLutPreview ? "translate-x-5" : "translate-x-0"
+                        )} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-white/5 space-y-3">
+                  <label className="text-sm font-medium text-zinc-200 block">
                     {t('language')}
                   </label>
                   <div className="grid grid-cols-2 gap-2">
@@ -782,7 +980,7 @@ function App() {
         <div className="fixed top-16 right-5 z-[95] pointer-events-none">
           <div className="w-72 rounded-xl border border-white/10 bg-zinc-900/85 backdrop-blur-xl shadow-2xl p-3">
             <div className="flex items-center justify-between text-xs mb-2">
-              <span className="text-zinc-200">{t('preparingPreview')}</span>
+              <span className="text-zinc-200">{previewLoadingText}</span>
               <span className="font-mono text-cyan-300">{Math.round(previewProgressPercent)}%</span>
             </div>
             <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
@@ -861,7 +1059,10 @@ function App() {
                   onDurationChange={handleDurationChange}
                   onEnded={handleVideoEnded}
                   onDecodeIssue={handleDecodeIssue}
-                  externalLoadingText={isPreparingPreview ? `${t('preparingPreview')} ${Math.round(previewProgressPercent ?? 0)}%` : null}
+                  externalLoadingText={isPreparingPreview ? `${previewLoadingText} ${Math.round(previewProgressPercent ?? 0)}%` : null}
+                  lutEnabled={shouldApplyLutOnPreview}
+                  lutPath={shouldApplyLutOnPreview ? normalizedLutPath : null}
+                  lutIntensity={normalizedLutIntensity}
                 />
 
               </div>
@@ -876,11 +1077,50 @@ function App() {
                       <Button
                         variant="ghost"
                         className="h-6 px-2 text-[11px] text-amber-400 hover:text-amber-300"
-                        onClick={() => void switchToCompatiblePreview()}
+                        onClick={switchToCompatiblePreview}
                         disabled={isPreparingPreview}
                       >
                         {t('useCompatiblePreview')}
                       </Button>
+                    )}
+                    {usingLutPreview && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-cyan-300">{t('lutPreviewMode')}</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={normalizedLutIntensityDraft}
+                          disabled={isPreparingPreview}
+                          onChange={(e) => {
+                            setLutIntensityDraft(clampLutIntensity(Number(e.target.value)));
+                          }}
+                          aria-label={t('lutIntensity')}
+                          className="w-24 accent-cyan-400 disabled:opacity-50"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={normalizedLutIntensityDraft}
+                          disabled={isPreparingPreview}
+                          onChange={(e) => {
+                            setLutIntensityDraft(clampLutIntensity(Number(e.target.value)));
+                          }}
+                          className="w-14 bg-zinc-800 border border-white/10 rounded px-1.5 py-0.5 text-[11px] text-zinc-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 font-mono"
+                        />
+                        <span className="text-cyan-200">%</span>
+                        <Button
+                          variant={hasPendingLutIntensity ? 'primary' : 'secondary'}
+                          className="h-6 px-2 text-[11px]"
+                          onClick={applyLutIntensity}
+                          disabled={isPreparingPreview || !hasPendingLutIntensity}
+                        >
+                          {t('applyLutIntensity')}
+                        </Button>
+                      </div>
                     )}
                     {usingCompatiblePreview && (
                       <span className="text-amber-400">{t('compatiblePreviewMode')}</span>
@@ -991,6 +1231,8 @@ function App() {
                           filePath,
                           outputDir,
                           segments,
+                          lutPath: shouldApplyLutOnExport ? normalizedLutPath : undefined,
+                          lutIntensity: shouldApplyLutOnExport ? normalizedLutIntensity : undefined,
                           jobId
                         });
                         if (res.success) {

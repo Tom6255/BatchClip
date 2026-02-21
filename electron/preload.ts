@@ -24,12 +24,16 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     filePath: string,
     outputDir: string,
     segments: { start: number, end: number, id: string }[],
+    lutPath?: string,
+    lutIntensity?: number,
     jobId?: string
   }) => ipcRenderer.invoke('process-batch', opts),
 
   preparePreview: (opts: {
     filePath: string,
     forceProxy?: boolean,
+    lutPath?: string,
+    lutIntensity?: number,
     jobId?: string
   }) => ipcRenderer.invoke('prepare-preview', opts),
 
@@ -37,6 +41,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     proxyPath: string
   }) => ipcRenderer.invoke('cleanup-preview', opts),
 
+  readLutFile: (opts: {
+    lutPath: string
+  }) => ipcRenderer.invoke('read-lut-file', opts),
+
   showOpenDialog: () => ipcRenderer.invoke('show-open-dialog'),
+  showOpenLutDialog: () => ipcRenderer.invoke('show-open-lut-dialog'),
   showSaveDialog: () => ipcRenderer.invoke('show-save-dialog')
 })

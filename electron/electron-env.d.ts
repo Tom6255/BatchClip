@@ -21,6 +21,8 @@ interface Window {
       filePath: string,
       outputDir: string,
       segments: { start: number, end: number, id: string }[],
+      lutPath?: string,
+      lutIntensity?: number,
       jobId?: string
     }) => Promise<{
       success: boolean;
@@ -35,6 +37,8 @@ interface Window {
     preparePreview: (opts: {
       filePath: string;
       forceProxy?: boolean;
+      lutPath?: string;
+      lutIntensity?: number;
       jobId?: string;
     }) => Promise<{
       success: boolean;
@@ -49,7 +53,17 @@ interface Window {
       proxyPath: string
     }) => Promise<{ success: boolean; error?: string }>;
 
+    readLutFile: (opts: {
+      lutPath: string
+    }) => Promise<{
+      success: boolean;
+      path?: string;
+      content?: string;
+      error?: string;
+    }>;
+
     showOpenDialog: () => Promise<string | null>;
+    showOpenLutDialog: () => Promise<string | null>;
     showSaveDialog: () => Promise<string | null>;
 
 

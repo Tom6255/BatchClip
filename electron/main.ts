@@ -43,11 +43,20 @@ type ProbeVideoStream = {
   codec_name?: string
   profile?: string | number
   pix_fmt?: string
+  width?: number
+  height?: number
+  bit_rate_kbps?: number
+}
+
+type ProbeAudioStream = {
+  bit_rate_kbps?: number
 }
 
 type ProbeVideoInfo = {
   stream: ProbeVideoStream | null
+  audioStream: ProbeAudioStream | null
   durationSec: number | null
+  formatBitRateKbps: number | null
 }
 
 type ProbeCacheEntry = {
@@ -66,20 +75,31 @@ const PREVIEW_COMMON_OUTPUT_OPTIONS = [
   '-map', '0:v:0',
   '-map', '0:a:0?',
   '-pix_fmt', 'yuv420p',
-  '-movflags', '+faststart',
-  '-vf', 'scale=min(1920\\,iw):-2'
+  '-movflags', '+faststart'
 ]
 
 const PREVIEW_SOFTWARE_ENCODER: PreviewEncoderConfig = {
   name: 'libx264',
   videoCodec: 'libx264',
-  outputOptions: ['-preset', 'veryfast', '-crf', '23']
+  outputOptions: ['-preset', 'ultrafast', '-b:v', '1800k', '-maxrate', '2200k', '-bufsize', '4400k']
 }
 
-const PREVIEW_DARWIN_HW_ENCODER: PreviewEncoderConfig = {
-  name: 'h264_videotoolbox',
-  videoCodec: 'h264_videotoolbox',
-  outputOptions: ['-allow_sw', '1', '-b:v', '6M', '-maxrate', '10M', '-bufsize', '20M']
+const PREVIEW_WINDOWS_NVENC_ENCODER: PreviewEncoderConfig = {
+  name: 'h264_nvenc',
+  videoCodec: 'h264_nvenc',
+  outputOptions: ['-preset', 'p4', '-rc', 'vbr', '-b:v', '2M', '-maxrate', '3M', '-bufsize', '6M']
+}
+
+const PREVIEW_WINDOWS_QSV_ENCODER: PreviewEncoderConfig = {
+  name: 'h264_qsv',
+  videoCodec: 'h264_qsv',
+  outputOptions: ['-global_quality', '24', '-look_ahead', '0', '-b:v', '2M', '-maxrate', '3M', '-bufsize', '6M']
+}
+
+const PREVIEW_WINDOWS_AMF_ENCODER: PreviewEncoderConfig = {
+  name: 'h264_amf',
+  videoCodec: 'h264_amf',
+  outputOptions: ['-quality', 'speed', '-b:v', '2M', '-maxrate', '3M', '-bufsize', '6M']
 }
 
 const EXPORT_PRIMARY_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET || 'fast'
@@ -113,14 +133,30 @@ function runFfmpegCommand(command: ffmpeg.FfmpegCommand): Promise<void> {
   })
 }
 
+function parseBitrateKbpsFromText(line: string): number | null {
+  const match = line.match(/(\d+(?:\.\d+)?)\s*kb\/s/i)
+  if (!match) {
+    return null
+  }
+
+  const value = Number(match[1])
+  if (!Number.isFinite(value) || value <= 0) {
+    return null
+  }
+
+  return Math.round(value)
+}
+
 function parseProbeInfoFromFfmpegOutput(stderrOutput: string): ProbeVideoInfo {
   const lines = stderrOutput
     .split(/\r?\n/)
     .map((line) => line.trim())
 
   const videoLine = lines.find((line) => line.includes('Video:'))
+  const audioLine = lines.find((line) => line.includes('Audio:'))
   const durationLine = lines.find((line) => line.startsWith('Duration:'))
   let durationSec: number | null = null
+  let formatBitRateKbps: number | null = null
 
   if (durationLine) {
     const durationMatch = durationLine.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/)
@@ -130,12 +166,16 @@ function parseProbeInfoFromFfmpegOutput(stderrOutput: string): ProbeVideoInfo {
         durationSec = parsed
       }
     }
+
+    formatBitRateKbps = parseBitrateKbpsFromText(durationLine)
   }
 
   if (!videoLine) {
     return {
       stream: null,
-      durationSec
+      audioStream: audioLine ? { bit_rate_kbps: parseBitrateKbpsFromText(audioLine) ?? undefined } : null,
+      durationSec,
+      formatBitRateKbps
     }
   }
 
@@ -143,7 +183,9 @@ function parseProbeInfoFromFfmpegOutput(stderrOutput: string): ProbeVideoInfo {
   if (markerIndex === -1) {
     return {
       stream: null,
-      durationSec
+      audioStream: audioLine ? { bit_rate_kbps: parseBitrateKbpsFromText(audioLine) ?? undefined } : null,
+      durationSec,
+      formatBitRateKbps
     }
   }
 
@@ -155,14 +197,25 @@ function parseProbeInfoFromFfmpegOutput(stderrOutput: string): ProbeVideoInfo {
   const codec_name = firstPart.split(/\s+/)[0]?.toLowerCase()
   const profileMatch = firstPart.match(/\(([^)]+)\)/)
   const pix_fmt = secondPart.split(/[\s(]/)[0]?.toLowerCase()
+  const resolutionPart = parts.find((part) => /\d{2,5}x\d{2,5}/.test(part)) ?? ''
+  const resolutionMatch = resolutionPart.match(/(\d{2,5})x(\d{2,5})/)
+  const width = resolutionMatch ? Number(resolutionMatch[1]) : null
+  const height = resolutionMatch ? Number(resolutionMatch[2]) : null
+  const videoBitRateKbps = parseBitrateKbpsFromText(videoLine)
+  const audioBitRateKbps = audioLine ? parseBitrateKbpsFromText(audioLine) : null
 
   return {
     stream: {
       codec_name: codec_name || undefined,
       profile: profileMatch?.[1],
-      pix_fmt: pix_fmt || undefined
+      pix_fmt: pix_fmt || undefined,
+      width: width && Number.isFinite(width) ? width : undefined,
+      height: height && Number.isFinite(height) ? height : undefined,
+      bit_rate_kbps: videoBitRateKbps ?? undefined
     },
-    durationSec
+    audioStream: audioBitRateKbps !== null ? { bit_rate_kbps: audioBitRateKbps } : null,
+    durationSec,
+    formatBitRateKbps
   }
 }
 
@@ -247,6 +300,82 @@ function shouldUsePreviewProxy(stream: ProbeVideoStream | null): boolean {
   return codec === 'hevc' || codec === 'h265' || profile.includes('main 10') || pixelFormat.includes('10')
 }
 
+function normalizeLutPath(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function normalizeLutIntensity(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) {
+    return 100
+  }
+
+  return Math.min(100, Math.max(0, numeric))
+}
+
+async function resolveLutPath(lutPath: unknown): Promise<string | null> {
+  const normalizedPath = normalizeLutPath(lutPath)
+  if (!normalizedPath) {
+    return null
+  }
+
+  if (path.extname(normalizedPath).toLowerCase() !== '.cube') {
+    throw new Error('Only .cube LUT files are supported')
+  }
+
+  try {
+    await fs.promises.access(normalizedPath, fs.constants.R_OK)
+  } catch {
+    throw new Error(`LUT file is not readable: ${normalizedPath}`)
+  }
+
+  return normalizedPath
+}
+
+function escapePathForFilter(filePath: string): string {
+  return filePath
+    .replace(/\\/g, '/')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "\\\\'")
+}
+
+function buildLutFilter(filePath: string): string {
+  return `lut3d=file='${escapePathForFilter(filePath)}'`
+}
+
+function buildLutFilterGraph(lutPath: string | null, lutIntensity: number): string | null {
+  if (!lutPath) {
+    return null
+  }
+
+  const clampedIntensity = Math.min(100, Math.max(0, lutIntensity))
+  if (clampedIntensity <= 0) {
+    return null
+  }
+
+  if (clampedIntensity >= 100) {
+    return buildLutFilter(lutPath)
+  }
+
+  const opacity = (clampedIntensity / 100).toFixed(4)
+  return `split=2[orig][lutsrc];[lutsrc]${buildLutFilter(lutPath)}[lutout];[lutout][orig]blend=all_mode=normal:all_opacity=${opacity}`
+}
+
+function buildPreviewFilterGraph(lutPath: string | null, lutIntensity: number): string {
+  const baseFilter = 'scale=min(1280\\,iw):-2'
+  const lutFilterGraph = buildLutFilterGraph(lutPath, lutIntensity)
+  if (!lutFilterGraph) {
+    return baseFilter
+  }
+
+  return `${baseFilter},${lutFilterGraph}`
+}
+
 async function removeFileIfExists(filePath: string): Promise<void> {
   try {
     await fs.promises.unlink(filePath)
@@ -259,16 +388,24 @@ async function removeFileIfExists(filePath: string): Promise<void> {
 
 async function createPreviewProxy(filePath: string, options?: {
   durationSec?: number | null
+  lutPath?: string | null
+  lutIntensity?: number
   onProgress?: (percent: number) => void
 }): Promise<string> {
-  const { durationSec = null, onProgress } = options ?? {}
+  const { durationSec = null, lutPath = null, lutIntensity = 100, onProgress } = options ?? {}
   const previewDir = path.join(app.getPath('temp'), 'batchclip-preview')
   await fs.promises.mkdir(previewDir, { recursive: true })
 
   const baseName = path.basename(filePath, path.extname(filePath))
   const proxyPath = path.join(previewDir, `${baseName}_preview_${Date.now()}.mp4`)
-  const encoderAttempts = process.platform === 'darwin'
-    ? [PREVIEW_DARWIN_HW_ENCODER, PREVIEW_SOFTWARE_ENCODER]
+  const previewFilterGraph = buildPreviewFilterGraph(lutPath, lutIntensity)
+  const encoderAttempts = process.platform === 'win32'
+    ? [
+      PREVIEW_WINDOWS_NVENC_ENCODER,
+      PREVIEW_WINDOWS_QSV_ENCODER,
+      PREVIEW_WINDOWS_AMF_ENCODER,
+      PREVIEW_SOFTWARE_ENCODER
+    ]
     : [PREVIEW_SOFTWARE_ENCODER]
 
   let lastErrorMessage = 'Failed to build preview proxy'
@@ -280,8 +417,12 @@ async function createPreviewProxy(filePath: string, options?: {
       .output(proxyPath)
       .videoCodec(encoder.videoCodec)
       .audioCodec('aac')
-      .audioBitrate('192k')
-      .outputOptions([...PREVIEW_COMMON_OUTPUT_OPTIONS, ...encoder.outputOptions])
+      .audioBitrate('96k')
+      .outputOptions([
+        ...PREVIEW_COMMON_OUTPUT_OPTIONS,
+        '-vf', previewFilterGraph,
+        ...encoder.outputOptions
+      ])
       .on('start', () => {
         onProgress?.(0)
       })
@@ -323,6 +464,10 @@ async function exportSingleClip(options: {
   durationSec: number
   outputPath: string
   x264Preset: string
+  lutPath?: string | null
+  lutIntensity?: number
+  sourceVideoBitRateKbps?: number | null
+  sourceAudioBitRateKbps?: number | null
   onProgress?: (percent: number) => void
 }): Promise<void> {
   const {
@@ -331,8 +476,31 @@ async function exportSingleClip(options: {
     durationSec,
     outputPath,
     x264Preset,
+    lutPath = null,
+    lutIntensity = 100,
+    sourceVideoBitRateKbps = null,
+    sourceAudioBitRateKbps = null,
     onProgress
   } = options
+
+  const outputOptions = [
+    '-preset', x264Preset,
+    '-movflags', 'use_metadata_tags',
+    '-pix_fmt', 'yuv420p'
+  ]
+
+  const lutFilterGraph = buildLutFilterGraph(lutPath, lutIntensity)
+  if (lutFilterGraph) {
+    outputOptions.push('-vf', lutFilterGraph)
+  }
+
+  if (sourceVideoBitRateKbps && sourceVideoBitRateKbps > 0) {
+    outputOptions.push('-b:v', `${Math.round(sourceVideoBitRateKbps)}k`)
+  }
+
+  if (sourceAudioBitRateKbps && sourceAudioBitRateKbps > 0) {
+    outputOptions.push('-b:a', `${Math.round(sourceAudioBitRateKbps)}k`)
+  }
 
   await new Promise<void>((resolve, reject) => {
     ffmpeg(filePath)
@@ -341,11 +509,7 @@ async function exportSingleClip(options: {
       .output(outputPath)
       .videoCodec('libx264')
       .audioCodec('aac')
-      .outputOptions([
-        '-preset', x264Preset,
-        '-movflags', 'use_metadata_tags',
-        '-pix_fmt', 'yuv420p'
-      ])
+      .outputOptions(outputOptions)
       .on('progress', (progress) => {
         let segmentPercent = typeof progress.percent === 'number' ? progress.percent : null
         if ((segmentPercent === null || !Number.isFinite(segmentPercent)) && durationSec > 0) {
@@ -463,7 +627,31 @@ ipcMain.handle('show-open-dialog', async () => {
   return filePaths[0] || null;
 });
 
-ipcMain.handle('prepare-preview', async (event, { filePath, forceProxy = false, jobId }) => {
+ipcMain.handle('show-open-lut-dialog', async () => {
+  if (!win) return null
+  const { filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Select LUT File',
+    properties: ['openFile'],
+    filters: [{ name: 'LUT Files', extensions: ['cube'] }]
+  })
+  return filePaths[0] || null
+})
+
+ipcMain.handle('read-lut-file', async (_event, { lutPath }) => {
+  try {
+    const resolvedLutPath = await resolveLutPath(lutPath)
+    if (!resolvedLutPath) {
+      return { success: false, error: 'Invalid LUT path' }
+    }
+
+    const content = await fs.promises.readFile(resolvedLutPath, 'utf8')
+    return { success: true, path: resolvedLutPath, content }
+  } catch (error: unknown) {
+    return { success: false, error: getErrorMessage(error) || 'Failed to read LUT file' }
+  }
+})
+
+ipcMain.handle('prepare-preview', async (event, { filePath, forceProxy = false, lutPath, lutIntensity, jobId }) => {
   if (!filePath || typeof filePath !== 'string') {
     return { success: false, useProxy: false, error: 'Invalid file path' }
   }
@@ -492,7 +680,12 @@ ipcMain.handle('prepare-preview', async (event, { filePath, forceProxy = false, 
     }
 
     let suggestCompatibleMode = false
-    let probeInfo: ProbeVideoInfo = { stream: null, durationSec: null }
+    let probeInfo: ProbeVideoInfo = {
+      stream: null,
+      audioStream: null,
+      durationSec: null,
+      formatBitRateKbps: null
+    }
     try {
       probeInfo = await probeVideoInfo(filePath)
       suggestCompatibleMode = shouldUsePreviewProxy(probeInfo.stream)
@@ -510,9 +703,14 @@ ipcMain.handle('prepare-preview', async (event, { filePath, forceProxy = false, 
       }
     }
 
+    const resolvedLutPath = await resolveLutPath(lutPath)
+    const resolvedLutIntensity = normalizeLutIntensity(lutIntensity)
+
     emitProgress('start', 0)
     const proxyPath = await createPreviewProxy(filePath, {
       durationSec: probeInfo.durationSec,
+      lutPath: resolvedLutPath,
+      lutIntensity: resolvedLutIntensity,
       onProgress: (percent) => emitProgress('progress', percent)
     })
     emitProgress('done', 100)
@@ -547,10 +745,29 @@ ipcMain.handle('cleanup-preview', async (_event, { proxyPath }) => {
   }
 })
 
-ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, jobId }) => {
+ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, lutPath, lutIntensity, jobId }) => {
   // segments: { start, end, id }[]
+  const resolvedLutPath = await resolveLutPath(lutPath)
+  const resolvedLutIntensity = normalizeLutIntensity(lutIntensity)
+  let sourceInfo: ProbeVideoInfo = {
+    stream: null,
+    audioStream: null,
+    durationSec: null,
+    formatBitRateKbps: null
+  }
+  try {
+    sourceInfo = await probeVideoInfo(filePath)
+  } catch (error) {
+    console.warn('[BatchClip] Failed to probe source bitrate, fallback to encoder defaults.', error)
+  }
+
+  const sourceAudioBitRateKbps = sourceInfo.audioStream?.bit_rate_kbps ?? null
+  const sourceVideoBitRateKbps = sourceInfo.stream?.bit_rate_kbps ??
+    (sourceInfo.formatBitRateKbps
+      ? Math.max(400, sourceInfo.formatBitRateKbps - (sourceAudioBitRateKbps ?? 0))
+      : null)
   const results = [];
-  console.log(`Batch processing ${segments.length} clips from: ${filePath}`);
+  console.log(`Batch processing ${segments.length} clips from: ${filePath} (LUT: ${resolvedLutPath ? `${path.basename(resolvedLutPath)} @ ${resolvedLutIntensity}%` : 'off'})`);
 
   const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
   let lastReportedProgress = -1
@@ -611,6 +828,10 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, j
           durationSec: duration,
           outputPath: tempVidPath,
           x264Preset: EXPORT_PRIMARY_X264_PRESET,
+          lutPath: resolvedLutPath,
+          lutIntensity: resolvedLutIntensity,
+          sourceVideoBitRateKbps,
+          sourceAudioBitRateKbps,
           onProgress: emitSegmentProgress
         })
       } catch (primaryError) {
@@ -632,6 +853,10 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, j
             durationSec: duration,
             outputPath: tempVidPath,
             x264Preset: EXPORT_FALLBACK_X264_PRESET,
+            lutPath: resolvedLutPath,
+            lutIntensity: resolvedLutIntensity,
+            sourceVideoBitRateKbps,
+            sourceAudioBitRateKbps,
             onProgress: emitSegmentProgress
           })
         } catch (fallbackError) {
