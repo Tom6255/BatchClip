@@ -1,5 +1,5 @@
 ﻿import { memo, useState, useRef, useEffect, useCallback, type ButtonHTMLAttributes } from 'react';
-import { Upload, X, Zap, Download, Trash2, Scissors, Settings as SettingsIcon, List, Plus } from 'lucide-react';
+import { Upload, X, Zap, Download, Trash2, Scissors, Settings as SettingsIcon, List, Plus, Tag } from 'lucide-react';
 import { cn } from './lib/utils';
 import VideoPlayer, { VideoPlayerRef } from './components/VideoPlayer';
 import Timeline from './components/Timeline';
@@ -8,6 +8,8 @@ import { v4 as uuidv4 } from 'uuid';
 const DEFAULT_FIXED_DURATION = 3.9;
 const DEFAULT_LUT_INTENSITY = 100;
 const CURRENT_TIME_COMMIT_INTERVAL_MS = 80;
+const TAG_LIBRARY_STORAGE_KEY = 'clipTagLibrary';
+const MAX_TAG_LENGTH = 24;
 
 const toFileUrl = (absolutePath: string) => {
   const normalized = absolutePath.replace(/\\/g, '/');
@@ -25,6 +27,49 @@ const clampLutIntensity = (value: number) => {
     return DEFAULT_LUT_INTENSITY;
   }
   return Math.min(100, Math.max(0, Math.round(value)));
+};
+
+const normalizeTagName = (value: string) => {
+  return value.replace(/\s+/g, ' ').trim().slice(0, MAX_TAG_LENGTH);
+};
+
+const parseStoredTagLibrary = (): string[] => {
+  const raw = localStorage.getItem(TAG_LIBRARY_STORAGE_KEY);
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    const dedupeSet = new Set<string>();
+    const normalizedTags: string[] = [];
+    for (const item of parsed) {
+      if (typeof item !== 'string') {
+        continue;
+      }
+
+      const normalizedTag = normalizeTagName(item);
+      if (!normalizedTag) {
+        continue;
+      }
+
+      const dedupeKey = normalizedTag.toLowerCase();
+      if (dedupeSet.has(dedupeKey)) {
+        continue;
+      }
+
+      dedupeSet.add(dedupeKey);
+      normalizedTags.push(normalizedTag);
+    }
+
+    return normalizedTags;
+  } catch {
+    return [];
+  }
 };
 
 const translations = {
@@ -80,6 +125,13 @@ const translations = {
     switchVideo: 'Switch',
     removeVideo: 'Remove',
     queueVideoCount: '{count} videos',
+    tags: 'Tags',
+    tagPlaceholder: 'Type tag and press Enter',
+    addTag: 'Add Tag',
+    noTagLibrary: 'Create tags to assign on clips.',
+    noSegmentTags: 'No tags',
+    editTags: 'Edit Tags',
+    tagsNameHint: 'Export names prepend tags in this order.',
     exportAllVideosWithLut: 'Export All Videos With LUT',
     lutFullExportTitle: 'LUT Full Export',
     lutFullExportDesc: 'This will export all videos in the queue with current LUT and intensity, without clipping.',
@@ -140,6 +192,13 @@ const translations = {
     switchVideo: '切换',
     removeVideo: '移除',
     queueVideoCount: '{count} 个视频',
+    tags: '标签',
+    tagPlaceholder: '输入标签并回车',
+    addTag: '新建标签',
+    noTagLibrary: '先新建标签，再给片段添加标签。',
+    noSegmentTags: '未添加标签',
+    editTags: '编辑标签',
+    tagsNameHint: '导出文件名前缀会按标签顺序拼接。',
     exportAllVideosWithLut: '批量导出全部视频(LUT)',
     lutFullExportTitle: 'LUT 全量导出',
     lutFullExportDesc: '将对队列中的全部视频套用当前 LUT 与强度进行导出，不做切片。',
@@ -181,6 +240,7 @@ interface Segment {
   id: string;
   start: number;
   end: number;
+  tags: string[];
 }
 
 interface QueueVideoItem {
@@ -202,9 +262,14 @@ const formatTime = (seconds: number) => {
 interface SegmentListProps {
   queueItems: QueueVideoItem[];
   activeVideoId: string | null;
+  tagLibrary: string[];
   clipLabel: string;
   emptyLabel: string;
+  noTagLibraryLabel: string;
+  noSegmentTagsLabel: string;
+  editTagsLabel: string;
   onDeleteSegment: (videoId: string, segmentId: string) => void;
+  onToggleSegmentTag: (videoId: string, segmentId: string, tag: string) => void;
   onSwitchVideo: (videoId: string) => void;
   switchLabel: string;
   currentLabel: string;
@@ -213,13 +278,19 @@ interface SegmentListProps {
 const SegmentList = memo(function SegmentList({
   queueItems,
   activeVideoId,
+  tagLibrary,
   clipLabel,
   emptyLabel,
+  noTagLibraryLabel,
+  noSegmentTagsLabel,
+  editTagsLabel,
   onDeleteSegment,
+  onToggleSegmentTag,
   onSwitchVideo,
   switchLabel,
   currentLabel
 }: SegmentListProps) {
+  const [activeTagEditorKey, setActiveTagEditorKey] = useState<string | null>(null);
   const hasAnySegment = queueItems.some((item) => item.segments.length > 0);
   if (!hasAnySegment) {
     return (
@@ -258,27 +329,93 @@ const SegmentList = memo(function SegmentList({
               )}
             </div>
 
-            {videoItem.segments.map((seg, idx) => (
-              <div key={seg.id} className="bg-zinc-950 p-3 rounded border border-white/5 flex items-center gap-3 group">
-                <div className="w-6 h-6 rounded-full bg-blue-900/50 text-blue-400 flex items-center justify-center text-xs font-mono">
-                  {idx + 1}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-zinc-300 truncate">
-                    {videoItem.displayName} · {clipLabel} {idx + 1}
+            {videoItem.segments.map((seg, idx) => {
+              const segmentTags = Array.isArray(seg.tags) ? seg.tags : [];
+              const segmentEditorKey = `${videoItem.id}:${seg.id}`;
+              const isTagEditorOpen = activeTagEditorKey === segmentEditorKey;
+
+              return (
+                <div key={seg.id} className="bg-zinc-950 p-3 rounded border border-white/5 group space-y-2">
+                  <div className="flex items-center gap-3">
+                    <div className="w-6 h-6 rounded-full bg-blue-900/50 text-blue-400 flex items-center justify-center text-xs font-mono">
+                      {idx + 1}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-zinc-300 truncate">
+                        {videoItem.displayName} · {clipLabel} {idx + 1}
+                      </div>
+                      <div className="text-xs text-zinc-500 font-mono">
+                        {formatTime(seg.start)} - {formatTime(seg.end)}
+                      </div>
+                    </div>
+                    <button
+                      className="p-2 text-zinc-600 hover:text-red-500 transition-colors"
+                      onClick={() => onDeleteSegment(videoItem.id, seg.id)}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
-                  <div className="text-xs text-zinc-500 font-mono">
-                    {formatTime(seg.start)} - {formatTime(seg.end)}
+
+                  <div className="pl-9 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-wrap gap-1.5 min-h-5">
+                        {segmentTags.length > 0 ? (
+                          segmentTags.map((tagName) => (
+                            <button
+                              key={tagName}
+                              type="button"
+                              className="px-2 py-0.5 rounded-md border border-cyan-500/20 bg-cyan-500/10 text-[11px] text-cyan-200 hover:bg-cyan-500/20 transition-colors"
+                              onClick={() => onToggleSegmentTag(videoItem.id, seg.id, tagName)}
+                            >
+                              {tagName}
+                            </button>
+                          ))
+                        ) : (
+                          <span className="text-[11px] text-zinc-500">{noSegmentTagsLabel}</span>
+                        )}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px] shrink-0"
+                        onClick={() => setActiveTagEditorKey(isTagEditorOpen ? null : segmentEditorKey)}
+                      >
+                        <Tag className="w-3 h-3" />
+                        {editTagsLabel}
+                      </Button>
+                    </div>
+
+                    {isTagEditorOpen && (
+                      <div className="rounded-md border border-white/10 bg-zinc-900/60 p-2">
+                        {tagLibrary.length === 0 ? (
+                          <p className="text-[11px] text-zinc-500">{noTagLibraryLabel}</p>
+                        ) : (
+                          <div className="flex flex-wrap gap-1.5">
+                            {tagLibrary.map((tagName) => {
+                              const isSelected = segmentTags.includes(tagName);
+                              return (
+                                <button
+                                  key={tagName}
+                                  type="button"
+                                  onClick={() => onToggleSegmentTag(videoItem.id, seg.id, tagName)}
+                                  className={cn(
+                                    "px-2 py-0.5 rounded-md border text-[11px] transition-colors",
+                                    isSelected
+                                      ? "border-blue-500/50 bg-blue-500/20 text-blue-200"
+                                      : "border-white/10 bg-zinc-800/70 text-zinc-300 hover:border-blue-400/40 hover:text-zinc-100"
+                                  )}
+                                >
+                                  {tagName}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
-                <button
-                  className="p-2 text-zinc-600 hover:text-red-500 transition-colors"
-                  onClick={() => onDeleteSegment(videoItem.id, seg.id)}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         );
       })}
@@ -331,6 +468,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [showLutFullExportConfirm, setShowLutFullExportConfirm] = useState(false);
+  const [tagLibrary, setTagLibrary] = useState<string[]>(parseStoredTagLibrary);
+  const [newTagDraft, setNewTagDraft] = useState('');
 
   // Settings State
   const [useFixedDuration, setUseFixedDuration] = useState(() => {
@@ -397,6 +536,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem('lutIntensity', String(lutIntensity));
   }, [lutIntensity]);
+
+  useEffect(() => {
+    localStorage.setItem(TAG_LIBRARY_STORAGE_KEY, JSON.stringify(tagLibrary));
+  }, [tagLibrary]);
 
 
   // Video State
@@ -506,6 +649,123 @@ function App() {
       return nextSegments;
     });
   }, [activeVideoId]);
+
+  const sortTagsByLibraryOrder = useCallback((tags: string[]) => {
+    const orderMap = new Map(tagLibrary.map((tag, index) => [tag, index]));
+    const seen = new Set<string>();
+    const deduped = tags
+      .map((tag) => normalizeTagName(tag))
+      .filter((tag) => tag.length > 0)
+      .filter((tag) => {
+        const dedupeKey = tag.toLowerCase();
+        if (seen.has(dedupeKey)) {
+          return false;
+        }
+        seen.add(dedupeKey);
+        return true;
+      });
+
+    deduped.sort((a, b) => {
+      const indexA = orderMap.get(a);
+      const indexB = orderMap.get(b);
+      if (indexA === undefined && indexB === undefined) {
+        return a.localeCompare(b, 'zh-Hans-CN');
+      }
+      if (indexA === undefined) {
+        return 1;
+      }
+      if (indexB === undefined) {
+        return -1;
+      }
+      return indexA - indexB;
+    });
+
+    return deduped;
+  }, [tagLibrary]);
+
+  const addTagToLibrary = useCallback((rawTagName: string) => {
+    const normalizedTag = normalizeTagName(rawTagName);
+    if (!normalizedTag) {
+      return;
+    }
+
+    setTagLibrary((prevTags) => {
+      const existed = prevTags.some((tag) => tag.toLowerCase() === normalizedTag.toLowerCase());
+      if (existed) {
+        return prevTags;
+      }
+      return [...prevTags, normalizedTag];
+    });
+  }, []);
+
+  const commitTagDraft = useCallback(() => {
+    const normalizedTag = normalizeTagName(newTagDraft);
+    if (!normalizedTag) {
+      return;
+    }
+
+    addTagToLibrary(normalizedTag);
+    setNewTagDraft('');
+  }, [addTagToLibrary, newTagDraft]);
+
+  const removeTagFromLibrary = useCallback((targetTag: string) => {
+    setTagLibrary((prevTags) => prevTags.filter((tag) => tag !== targetTag));
+
+    const stripTargetTag = (segment: Segment): Segment => {
+      if (!segment.tags.includes(targetTag)) {
+        return segment;
+      }
+      return {
+        ...segment,
+        tags: segment.tags.filter((tag) => tag !== targetTag)
+      };
+    };
+
+    setVideoQueue((prevQueue) => prevQueue.map((item) => {
+      const nextSegments = item.segments.map(stripTargetTag);
+      const hasChanged = nextSegments.some((segment, index) => segment !== item.segments[index]);
+      if (!hasChanged) {
+        return item;
+      }
+      return { ...item, segments: nextSegments };
+    }));
+
+    setSegments((prevSegments) => prevSegments.map(stripTargetTag));
+  }, []);
+
+  const toggleSegmentTag = useCallback((videoId: string, segmentId: string, tagName: string) => {
+    const updateTargetSegment = (segment: Segment): Segment => {
+      if (segment.id !== segmentId) {
+        return segment;
+      }
+
+      const normalizedTagName = normalizeTagName(tagName);
+      if (!normalizedTagName) {
+        return segment;
+      }
+
+      const hasTag = segment.tags.includes(normalizedTagName);
+      const nextTags = hasTag
+        ? segment.tags.filter((tag) => tag !== normalizedTagName)
+        : sortTagsByLibraryOrder([...segment.tags, normalizedTagName]);
+
+      return {
+        ...segment,
+        tags: nextTags
+      };
+    };
+
+    if (videoId === activeVideoId) {
+      setActiveSegments((prev) => prev.map(updateTargetSegment));
+      return;
+    }
+
+    setVideoQueue((prevQueue) => prevQueue.map((item) => (
+      item.id === videoId
+        ? { ...item, segments: item.segments.map(updateTargetSegment) }
+        : item
+    )));
+  }, [activeVideoId, setActiveSegments, sortTagsByLibraryOrder]);
 
   const switchToQueueVideo = useCallback((videoId: string) => {
     if (videoId === activeVideoId) {
@@ -660,7 +920,8 @@ function App() {
     const newSegment: Segment = {
       id: uuidv4(),
       start,
-      end: normalizedEnd
+      end: normalizedEnd,
+      tags: []
     };
 
     setActiveSegments((prev) => {
@@ -1127,7 +1388,12 @@ function App() {
           const res = await window.ipcRenderer.processBatch({
             filePath: queueItem.filePath,
             outputDir,
-            segments: queueItem.segments,
+            segments: queueItem.segments.map((segment) => ({
+              id: segment.id,
+              start: segment.start,
+              end: segment.end,
+              tags: Array.isArray(segment.tags) ? segment.tags : []
+            })),
             lutPath: shouldApplyLutOnExport ? normalizedLutPath : undefined,
             lutIntensity: shouldApplyLutOnExport ? normalizedLutIntensity : undefined,
             jobId
@@ -1262,6 +1528,11 @@ function App() {
 
   const clipLabel = t('clip');
   const noClipsLabel = t('noClips');
+  const tagsLabel = t('tags');
+  const noTagLibraryLabel = t('noTagLibrary');
+  const noSegmentTagsLabel = t('noSegmentTags');
+  const editTagsLabel = t('editTags');
+  const tagsNameHintLabel = t('tagsNameHint');
   const lutFileName = hasLutFile ? getFileNameFromPath(normalizedLutPath) : t('lutNotSelected');
   const previewLoadingText = t('preparingPreview');
   const queueVideoCountLabel = t('queueVideoCount', { count: videoQueue.length });
@@ -1807,16 +2078,79 @@ function App() {
 
               </div>
 
+              <div className="px-3 py-3 border-b border-white/5 bg-zinc-950/30 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs text-zinc-300">
+                    <Tag className="w-3.5 h-3.5 text-cyan-300" />
+                    <span>{tagsLabel}</span>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 font-mono">{tagLibrary.length}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newTagDraft}
+                    maxLength={MAX_TAG_LENGTH}
+                    placeholder={t('tagPlaceholder')}
+                    onChange={(event) => setNewTagDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        commitTagDraft();
+                      }
+                    }}
+                    className="flex-1 h-8 bg-zinc-800 border border-white/10 rounded-md px-2.5 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  />
+                  <Button
+                    variant="secondary"
+                    className="h-8 px-2.5 text-xs"
+                    onClick={commitTagDraft}
+                  >
+                    <Plus className="w-3 h-3" />
+                    {t('addTag')}
+                  </Button>
+                </div>
+
+                {tagLibrary.length === 0 ? (
+                  <p className="text-[11px] text-zinc-500">{noTagLibraryLabel}</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {tagLibrary.map((tagName) => (
+                      <div
+                        key={tagName}
+                        className="inline-flex items-center rounded-md border border-white/10 bg-zinc-800/70 text-[11px] text-zinc-200 pl-2 pr-1 py-0.5"
+                      >
+                        <span>{tagName}</span>
+                        <button
+                          type="button"
+                          className="ml-1 p-0.5 text-zinc-500 hover:text-red-400 transition-colors"
+                          onClick={() => removeTagFromLibrary(tagName)}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <p className="text-[10px] text-zinc-500">{tagsNameHintLabel}</p>
+              </div>
+
               <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
                 <SegmentList
                   queueItems={videoQueue}
                   activeVideoId={activeVideoId}
+                  tagLibrary={tagLibrary}
                   clipLabel={clipLabel}
                   emptyLabel={noClipsLabel}
+                  noTagLibraryLabel={noTagLibraryLabel}
+                  noSegmentTagsLabel={noSegmentTagsLabel}
+                  editTagsLabel={editTagsLabel}
                   onSwitchVideo={switchToQueueVideo}
                   switchLabel={t('switchVideo')}
                   currentLabel={t('currentVideo')}
                   onDeleteSegment={deleteSegment}
+                  onToggleSegmentTag={toggleSegmentTag}
                 />
               </div>
 

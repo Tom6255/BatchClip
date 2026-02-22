@@ -77,6 +77,13 @@ type ExportEncoderConfig = {
   outputOptions: string[]
 }
 
+type BatchSegmentInput = {
+  id: string
+  start: number
+  end: number
+  tags?: unknown
+}
+
 const PREVIEW_COMMON_OUTPUT_OPTIONS = [
   '-map', '0:v:0',
   '-map', '0:a:0?',
@@ -111,6 +118,7 @@ const PREVIEW_WINDOWS_AMF_ENCODER: PreviewEncoderConfig = {
 const EXPORT_PRIMARY_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET || 'fast'
 const EXPORT_FALLBACK_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET_FALLBACK || 'medium'
 const MAX_PROBE_CACHE_ENTRIES = 128
+const INVALID_FILENAME_CHARS = /[<>:"/\\|?*]/g
 
 const EXPORT_WINDOWS_NVENC_ENCODER: ExportEncoderConfig = {
   name: 'h264_nvenc',
@@ -141,6 +149,64 @@ function getErrorMessage(error: unknown): string {
     return error.message
   }
   return String(error)
+}
+
+function normalizeTagLabel(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const normalized = value.trim().replace(/\s+/g, ' ')
+  return normalized.length > 0 ? normalized : null
+}
+
+function sanitizeFilenamePart(value: string): string {
+  const sanitized = Array.from(value.replace(INVALID_FILENAME_CHARS, ''))
+    .filter((char) => char.charCodeAt(0) >= 32)
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return sanitized.replace(/\.+$/, '')
+}
+
+function normalizeSegmentTags(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const tags: string[] = []
+  const dedupeSet = new Set<string>()
+
+  for (const item of value) {
+    const normalized = normalizeTagLabel(item)
+    if (!normalized) {
+      continue
+    }
+
+    const dedupeKey = normalized.toLowerCase()
+    if (dedupeSet.has(dedupeKey)) {
+      continue
+    }
+    dedupeSet.add(dedupeKey)
+    tags.push(normalized)
+  }
+
+  return tags
+}
+
+function buildClipOutputBaseName(baseName: string, clipIndex: number, tags: string[]): string {
+  const safeBaseName = sanitizeFilenamePart(baseName) || baseName
+  const clipBaseName = `${safeBaseName}_clip_${clipIndex.toString().padStart(2, '0')}`
+  const tagPrefix = tags
+    .map((tag) => sanitizeFilenamePart(tag))
+    .filter((tag) => tag.length > 0)
+    .join('_')
+
+  if (!tagPrefix) {
+    return clipBaseName
+  }
+
+  return `${tagPrefix}_${clipBaseName}`
 }
 
 function parseTimemarkToSeconds(timemark: string): number | null {
@@ -968,19 +1034,42 @@ ipcMain.handle('cleanup-preview', async (_event, { proxyPath }) => {
 })
 
 ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, lutPath, lutIntensity, jobId }) => {
-  // segments: { start, end, id }[]
+  const normalizedSegments: BatchSegmentInput[] = Array.isArray(segments)
+    ? segments.reduce<BatchSegmentInput[]>((acc, segment) => {
+        if (!segment || typeof segment !== 'object') {
+          return acc
+        }
+
+        const candidate = segment as Record<string, unknown>
+        const start = Number(candidate.start)
+        const end = Number(candidate.end)
+        if (typeof candidate.id !== 'string' || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+          return acc
+        }
+
+        acc.push({
+          id: candidate.id,
+          start,
+          end,
+          tags: candidate.tags
+        })
+        return acc
+      }, [])
+    : []
+
   const resolvedLutPath = await resolveLutPath(lutPath)
   const resolvedLutIntensity = normalizeLutIntensity(lutIntensity)
   const {
     sourceVideoBitRateKbps,
     sourceAudioBitRateKbps
   } = await probeSourceInfoWithBitrates(filePath)
-  const results = [];
-  console.log(`Batch processing ${segments.length} clips from: ${filePath} (LUT: ${resolvedLutPath ? `${path.basename(resolvedLutPath)} @ ${resolvedLutIntensity}%` : 'off'})`);
+  const totalSegments = normalizedSegments.length
+  const results: Array<{ id: string; success: boolean; path?: string; error?: string }> = []
+  console.log(`Batch processing ${totalSegments} clips from: ${filePath} (LUT: ${resolvedLutPath ? `${path.basename(resolvedLutPath)} @ ${resolvedLutIntensity}%` : 'off'})`)
 
   const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
   let lastReportedProgress = -1
-  const emitExportProgress = (phase: 'start' | 'progress' | 'done', percent: number, currentClip = 0, totalClips = segments.length) => {
+  const emitExportProgress = (phase: 'start' | 'progress' | 'done', percent: number, currentClip = 0, totalClips = totalSegments) => {
     if (!progressJobId) return
 
     const clampedPercent = Math.min(100, Math.max(0, percent))
@@ -1001,33 +1090,31 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
     })
   }
 
-  emitExportProgress('start', 0, 0, segments.length)
+  emitExportProgress('start', 0, 0, totalSegments)
 
   // Ensure output dir exists
-  await fs.promises.mkdir(outputDir, { recursive: true });
+  await fs.promises.mkdir(outputDir, { recursive: true })
 
-  const baseName = path.basename(filePath, path.extname(filePath));
+  const baseName = path.basename(filePath, path.extname(filePath))
 
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    const duration = seg.end - seg.start;
+  for (let i = 0; i < totalSegments; i++) {
+    const seg = normalizedSegments[i]
+    const duration = seg.end - seg.start
     const clipIndex = i + 1
-    const segmentStartPercent = (i / Math.max(segments.length, 1)) * 100
-    const segmentWeight = 100 / Math.max(segments.length, 1)
-    // Output name: VideoName_clip_01_Time.mov
-    // Use a safe timestamp format or just index
-    const outName = `${baseName}_clip_${clipIndex.toString().padStart(2, '0')}.mov`;
-    const tempVidPath = path.join(outputDir, outName);
+    const segmentStartPercent = (i / Math.max(totalSegments, 1)) * 100
+    const segmentWeight = 100 / Math.max(totalSegments, 1)
+    const outName = `${buildClipOutputBaseName(baseName, clipIndex, normalizeSegmentTags(seg.tags))}.mov`
+    const tempVidPath = path.join(outputDir, outName)
 
-    console.log(`Processing clip ${clipIndex}: ${seg.start}-${seg.end} -> ${outName}`);
-    emitExportProgress('progress', segmentStartPercent, clipIndex, segments.length)
+    console.log(`Processing clip ${clipIndex}: ${seg.start}-${seg.end} -> ${outName}`)
+    emitExportProgress('progress', segmentStartPercent, clipIndex, totalSegments)
 
     try {
       let maxSegmentPercent = 0
       const emitSegmentProgress = (segmentPercent: number) => {
         maxSegmentPercent = Math.max(maxSegmentPercent, Math.min(100, Math.max(0, segmentPercent)))
         const overallPercent = segmentStartPercent + (maxSegmentPercent / 100) * segmentWeight
-        emitExportProgress('progress', overallPercent, clipIndex, segments.length)
+        emitExportProgress('progress', overallPercent, clipIndex, totalSegments)
       }
 
       await exportSingleClip({
@@ -1042,20 +1129,20 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
         onProgress: emitSegmentProgress
       })
 
-      emitExportProgress('progress', ((i + 1) / Math.max(segments.length, 1)) * 100, clipIndex, segments.length)
-      results.push({ id: seg.id, success: true, path: tempVidPath });
+      emitExportProgress('progress', ((i + 1) / Math.max(totalSegments, 1)) * 100, clipIndex, totalSegments)
+      results.push({ id: seg.id, success: true, path: tempVidPath })
     } catch (error: unknown) {
       const errorMessage = getErrorMessage(error)
-      console.error(`Error processing clip ${clipIndex}:`, error);
+      console.error(`Error processing clip ${clipIndex}:`, error)
       await removeFileIfExists(tempVidPath)
-      emitExportProgress('progress', ((i + 1) / Math.max(segments.length, 1)) * 100, clipIndex, segments.length)
-      results.push({ id: seg.id, success: false, error: errorMessage });
+      emitExportProgress('progress', ((i + 1) / Math.max(totalSegments, 1)) * 100, clipIndex, totalSegments)
+      results.push({ id: seg.id, success: false, error: errorMessage })
     }
   }
 
-  emitExportProgress('done', 100, segments.length, segments.length)
-  return { success: true, results };
-});
+  emitExportProgress('done', 100, totalSegments, totalSegments)
+  return { success: true, results }
+})
 
 ipcMain.handle('process-lut-full-batch', async (event, { videos, outputDir, lutPath, lutIntensity, jobId }) => {
   const resolvedLutPath = await resolveLutPath(lutPath)

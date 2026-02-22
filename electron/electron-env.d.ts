@@ -20,7 +20,7 @@ interface Window {
     processBatch: (opts: {
       filePath: string,
       outputDir: string,
-      segments: { start: number, end: number, id: string }[],
+      segments: { start: number, end: number, id: string, tags?: string[] }[],
       lutPath?: string,
       lutIntensity?: number,
       jobId?: string
