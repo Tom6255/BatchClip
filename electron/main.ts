@@ -119,6 +119,9 @@ const EXPORT_PRIMARY_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET || 'fast'
 const EXPORT_FALLBACK_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET_FALLBACK || 'medium'
 const MAX_PROBE_CACHE_ENTRIES = 128
 const INVALID_FILENAME_CHARS = /[<>:"/\\|?*]/g
+const BYTES_PER_MEGABYTE = 1024 * 1024
+const MIN_SPLIT_CLIP_DURATION_SEC = 0.2
+const MAX_SPLIT_SEGMENTS = 10000
 
 const EXPORT_WINDOWS_NVENC_ENCODER: ExportEncoderConfig = {
   name: 'h264_nvenc',
@@ -207,6 +210,33 @@ function buildClipOutputBaseName(baseName: string, clipIndex: number, tags: stri
   }
 
   return `${tagPrefix}_${clipBaseName}`
+}
+
+function buildSizeSplitOutputBaseName(baseName: string, clipIndex: number): string {
+  const safeBaseName = sanitizeFilenamePart(baseName) || baseName
+  return `${safeBaseName}_clip${clipIndex.toString().padStart(2, '0')}`
+}
+
+function resolveSourceBitRateKbps(info: ProbeVideoInfo): number | null {
+  if (info.formatBitRateKbps && info.formatBitRateKbps > 0) {
+    return info.formatBitRateKbps
+  }
+
+  const videoBitRate = info.stream?.bit_rate_kbps ?? null
+  const audioBitRate = info.audioStream?.bit_rate_kbps ?? null
+  if (videoBitRate && videoBitRate > 0 && audioBitRate && audioBitRate > 0) {
+    return videoBitRate + audioBitRate
+  }
+
+  if (videoBitRate && videoBitRate > 0) {
+    return videoBitRate
+  }
+
+  if (audioBitRate && audioBitRate > 0) {
+    return audioBitRate
+  }
+
+  return null
 }
 
 function parseTimemarkToSeconds(timemark: string): number | null {
@@ -770,6 +800,53 @@ async function exportSingleFullVideo(options: {
   throw new Error(lastErrorMessage)
 }
 
+async function exportSingleSizeSplitClip(options: {
+  filePath: string
+  outputPath: string
+  startSec: number
+  targetSizeBytes: number
+  estimatedDurationSec?: number
+  onProgress?: (processedSeconds: number) => void
+}): Promise<void> {
+  const {
+    filePath,
+    outputPath,
+    startSec,
+    targetSizeBytes,
+    estimatedDurationSec = 0,
+    onProgress
+  } = options
+
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(filePath)
+      .setStartTime(Math.max(0, startSec))
+      .output(outputPath)
+      .outputOptions([
+        '-map', '0:v:0',
+        '-map', '0:a:0?',
+        '-c', 'copy',
+        '-dn',
+        '-avoid_negative_ts', 'make_zero',
+        '-fs', `${Math.max(1, Math.floor(targetSizeBytes))}`
+      ])
+      .on('progress', (progress) => {
+        const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+        if (processedSeconds !== null) {
+          onProgress?.(Math.max(0, processedSeconds))
+          return
+        }
+
+        if (estimatedDurationSec > 0 && typeof progress.percent === 'number' && Number.isFinite(progress.percent)) {
+          const fallbackProgressSeconds = (Math.min(100, Math.max(0, progress.percent)) / 100) * estimatedDurationSec
+          onProgress?.(fallbackProgressSeconds)
+        }
+      })
+      .on('end', () => resolve())
+      .on('error', (error) => reject(error))
+      .run()
+  })
+}
+
 async function probeSourceInfoWithBitrates(filePath: string): Promise<{
   info: ProbeVideoInfo
   sourceVideoBitRateKbps: number | null
@@ -1030,6 +1107,151 @@ ipcMain.handle('cleanup-preview', async (_event, { proxyPath }) => {
     return { success: true }
   } catch (error: unknown) {
     return { success: false, error: getErrorMessage(error) || 'Failed to cleanup preview proxy' }
+  }
+})
+
+ipcMain.handle('process-size-split', async (event, { filePath, outputDir, targetSizeMb, jobId }) => {
+  if (!filePath || typeof filePath !== 'string') {
+    return { success: false, error: 'Invalid file path', results: [] }
+  }
+
+  if (!outputDir || typeof outputDir !== 'string') {
+    return { success: false, error: 'Invalid output directory', results: [] }
+  }
+
+  const normalizedTargetSizeMb = Number(targetSizeMb)
+  if (!Number.isFinite(normalizedTargetSizeMb) || normalizedTargetSizeMb <= 0) {
+    return { success: false, error: 'Invalid target size', results: [] }
+  }
+
+  const targetSizeBytes = Math.max(1, Math.floor(normalizedTargetSizeMb * BYTES_PER_MEGABYTE))
+  const results: Array<{ id: string; success: boolean; path?: string; error?: string }> = []
+
+  const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+  let lastReportedProgress = -1
+  const emitExportProgress = (phase: 'start' | 'progress' | 'done', percent: number, currentClip = 0, totalClips = 0) => {
+    if (!progressJobId) return
+
+    const clampedPercent = Math.min(100, Math.max(0, percent))
+    const rounded = Math.round(clampedPercent)
+    if (phase === 'progress' && rounded === lastReportedProgress) {
+      return
+    }
+
+    if (phase === 'progress') {
+      lastReportedProgress = rounded
+    }
+
+    event.sender.send('batch-export-progress', {
+      jobId: progressJobId,
+      phase,
+      percent: rounded,
+      currentClip,
+      totalClips
+    })
+  }
+
+  try {
+    await fs.promises.mkdir(outputDir, { recursive: true })
+    const sourceStat = await fs.promises.stat(filePath)
+    if (!sourceStat.isFile() || sourceStat.size <= 0) {
+      return { success: false, error: 'Source file is invalid or empty', results }
+    }
+
+    const sourceInfo = await probeVideoInfo(filePath)
+    const totalDurationSec = sourceInfo.durationSec
+    if (!totalDurationSec || !Number.isFinite(totalDurationSec) || totalDurationSec <= 0) {
+      return { success: false, error: 'Unable to read source duration', results }
+    }
+
+    const estimatedTotalClips = Math.max(1, Math.ceil(sourceStat.size / targetSizeBytes))
+    const sourceBitRateKbps = resolveSourceBitRateKbps(sourceInfo)
+    const estimatedClipDurationSec = sourceBitRateKbps && sourceBitRateKbps > 0
+      ? (targetSizeBytes * 8) / (sourceBitRateKbps * 1000)
+      : totalDurationSec / estimatedTotalClips
+
+    const safeEstimatedClipDurationSec = Math.max(MIN_SPLIT_CLIP_DURATION_SEC, estimatedClipDurationSec)
+    const sourceExt = path.extname(filePath)
+    const outputExt = sourceExt && sourceExt.length > 0 ? sourceExt : '.mp4'
+    const baseName = path.basename(filePath, sourceExt)
+
+    emitExportProgress('start', 0, 0, estimatedTotalClips)
+
+    let startSec = 0
+    let clipIndex = 1
+
+    while (startSec < totalDurationSec - 0.01) {
+      if (clipIndex > MAX_SPLIT_SEGMENTS) {
+        throw new Error('Segment count exceeded safe limit')
+      }
+
+      const clipStartSec = startSec
+      const outputBaseName = buildSizeSplitOutputBaseName(baseName, clipIndex)
+      const outputPath = await buildUniqueOutputPath(outputDir, outputBaseName, outputExt)
+
+      let maxProcessedSeconds = 0
+      const reportSplitProgress = (processedSeconds: number) => {
+        maxProcessedSeconds = Math.max(maxProcessedSeconds, processedSeconds)
+        const absoluteProgressSeconds = Math.min(totalDurationSec, clipStartSec + maxProcessedSeconds)
+        const percent = (absoluteProgressSeconds / totalDurationSec) * 100
+        emitExportProgress('progress', percent, Math.min(clipIndex, estimatedTotalClips), estimatedTotalClips)
+      }
+
+      await exportSingleSizeSplitClip({
+        filePath,
+        outputPath,
+        startSec: clipStartSec,
+        targetSizeBytes,
+        estimatedDurationSec: safeEstimatedClipDurationSec,
+        onProgress: reportSplitProgress
+      })
+
+      const outputStat = await fs.promises.stat(outputPath)
+      if (outputStat.size <= 0) {
+        await removeFileIfExists(outputPath)
+        throw new Error(`Split clip ${clipIndex} is empty`)
+      }
+
+      let clipDurationSec: number | null = null
+      try {
+        const clipInfo = await probeVideoInfo(outputPath)
+        clipDurationSec = clipInfo.durationSec
+      } catch {
+        clipDurationSec = null
+      }
+
+      const safeClipDurationSec = clipDurationSec && Number.isFinite(clipDurationSec) && clipDurationSec > MIN_SPLIT_CLIP_DURATION_SEC
+        ? clipDurationSec
+        : (maxProcessedSeconds > MIN_SPLIT_CLIP_DURATION_SEC ? maxProcessedSeconds : safeEstimatedClipDurationSec)
+
+      if (!Number.isFinite(safeClipDurationSec) || safeClipDurationSec <= 0) {
+        await removeFileIfExists(outputPath)
+        throw new Error('Failed to determine split clip duration')
+      }
+
+      startSec = Math.min(totalDurationSec, clipStartSec + safeClipDurationSec)
+      results.push({
+        id: `split-${clipIndex}`,
+        success: true,
+        path: outputPath
+      })
+
+      const currentClipCount = results.length
+      const progressTotalClips = Math.max(currentClipCount, estimatedTotalClips)
+      const percent = (startSec / totalDurationSec) * 100
+      emitExportProgress('progress', percent, currentClipCount, progressTotalClips)
+
+      clipIndex += 1
+    }
+
+    const finalClipCount = results.length
+    emitExportProgress('done', 100, finalClipCount, finalClipCount)
+    return { success: true, results }
+  } catch (error: unknown) {
+    const errorMessage = getErrorMessage(error)
+    console.error('Size split failed:', error)
+    emitExportProgress('done', 100, results.length, Math.max(results.length, 1))
+    return { success: false, error: errorMessage, results }
   }
 })
 

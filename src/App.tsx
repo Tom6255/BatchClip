@@ -1,5 +1,5 @@
 ﻿import { memo, useState, useRef, useEffect, useCallback, type ButtonHTMLAttributes } from 'react';
-import { Upload, X, Zap, Download, Trash2, Scissors, Settings as SettingsIcon, List, Plus, Tag } from 'lucide-react';
+import { Upload, X, Zap, Download, Trash2, Scissors, Settings as SettingsIcon, List, Plus, Tag, ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from './lib/utils';
 import VideoPlayer, { VideoPlayerRef } from './components/VideoPlayer';
 import Timeline from './components/Timeline';
@@ -10,6 +10,11 @@ const DEFAULT_LUT_INTENSITY = 100;
 const CURRENT_TIME_COMMIT_INTERVAL_MS = 80;
 const TAG_LIBRARY_STORAGE_KEY = 'clipTagLibrary';
 const MAX_TAG_LENGTH = 24;
+const VIDEO_FILE_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.webm', '.ts', '.m4s'];
+const VIDEO_FILE_ACCEPT = ['video/*', ...VIDEO_FILE_EXTENSIONS].join(',');
+const DEFAULT_SPLIT_TARGET_SIZE_MB = 800;
+const MIN_SPLIT_TARGET_SIZE_MB = 1;
+const MAX_SPLIT_TARGET_SIZE_MB = 1024 * 100;
 
 const toFileUrl = (absolutePath: string) => {
   const normalized = absolutePath.replace(/\\/g, '/');
@@ -70,6 +75,12 @@ const parseStoredTagLibrary = (): string[] => {
   } catch {
     return [];
   }
+};
+
+const isSupportedVideoFile = (file: File) => {
+  const fileName = file.name.toLowerCase();
+  const hasVideoExtension = VIDEO_FILE_EXTENSIONS.some((ext) => fileName.endsWith(ext));
+  return file.type.startsWith('video/') || hasVideoExtension;
 };
 
 const translations = {
@@ -138,7 +149,24 @@ const translations = {
     lutFullExportDesc2: 'Output keeps source resolution and bitrate targets.',
     confirmExport: 'Confirm Export',
     cancel: 'Cancel',
-    exportingVideos: 'Exporting videos...'
+    exportingVideos: 'Exporting videos...',
+    quickActions: 'Quick Actions',
+    quickActionsDesc: 'Pick a feature button to open its parameter panel.',
+    quickSplitBySize: 'Auto Split by Size',
+    quickSplitButtonLabel: 'Auto split clips by target file size',
+    quickSplitBySizeDesc: 'Split one source video into sequential parts by target size (MB) without changing resolution or bitrate.',
+    quickSplitTargetSize: 'Target Size (MB)',
+    quickSplitTargetHint: 'Each output clip will be close to this size. The final clip can be smaller.',
+    quickSplitSourceFile: 'Source Video',
+    quickSplitSourceSize: 'Source Size',
+    quickSplitNoSource: 'No source selected',
+    quickSplitChooseSource: 'Choose Video',
+    quickSplitRun: 'Start Auto Split',
+    quickSplitInvalidTarget: 'Please set a valid target size (MB).',
+    quickSplitNeedSource: 'Please choose a source video first.',
+    quickSplitSuccess: 'Size split complete. Exported {count} clips.',
+    quickSplitFailed: 'Size split failed: ',
+    quickSplitting: 'Splitting by size...'
   },
   zh: {
     runningTime: '当前进度',
@@ -205,7 +233,24 @@ const translations = {
     lutFullExportDesc2: '导出保持原视频分辨率与目标码率设置。',
     confirmExport: '确认导出',
     cancel: '取消',
-    exportingVideos: '正在导出视频...'
+    exportingVideos: '正在导出视频...',
+    quickActions: '快捷功能',
+    quickActionsDesc: '点击功能按钮后展开二级参数面板。',
+    quickSplitBySize: '按体积自动分割',
+    quickSplitButtonLabel: '按照视频体积大小进行自动片段裁剪',
+    quickSplitBySizeDesc: '按目标大小(MB)将单个视频顺序分段，保持原分辨率与码率，不重新编码。',
+    quickSplitTargetSize: '目标体积 (MB)',
+    quickSplitTargetHint: '每段将尽量接近该大小，最后一段可能更小。',
+    quickSplitSourceFile: '源视频',
+    quickSplitSourceSize: '原视频体积',
+    quickSplitNoSource: '未选择源视频',
+    quickSplitChooseSource: '选择源视频',
+    quickSplitRun: '开始自动分割',
+    quickSplitInvalidTarget: '请输入有效的目标体积(MB)。',
+    quickSplitNeedSource: '请先选择一个源视频。',
+    quickSplitSuccess: '自动分割完成，已导出 {count} 段视频。',
+    quickSplitFailed: '自动分割失败: ',
+    quickSplitting: '正在按体积分割...'
   }
 };
 
@@ -257,6 +302,18 @@ const formatTime = (seconds: number) => {
   const secs = Math.floor(seconds % 60);
   const ms = Math.floor((seconds % 1) * 100);
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+};
+
+const formatFileSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const exponent = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const value = bytes / (1024 ** exponent);
+  const precision = exponent >= 2 ? 2 : 1;
+  return `${value.toFixed(precision)} ${units[exponent]}`;
 };
 
 interface SegmentListProps {
@@ -470,6 +527,11 @@ function App() {
   const [showLutFullExportConfirm, setShowLutFullExportConfirm] = useState(false);
   const [tagLibrary, setTagLibrary] = useState<string[]>(parseStoredTagLibrary);
   const [newTagDraft, setNewTagDraft] = useState('');
+  const [quickSplitTargetSizeMb, setQuickSplitTargetSizeMb] = useState(DEFAULT_SPLIT_TARGET_SIZE_MB);
+  const [quickSplitSourcePath, setQuickSplitSourcePath] = useState('');
+  const [quickSplitSourceName, setQuickSplitSourceName] = useState('');
+  const [quickSplitSourceSizeBytes, setQuickSplitSourceSizeBytes] = useState<number | null>(null);
+  const [activeQuickAction, setActiveQuickAction] = useState<'split-by-size' | null>(null);
 
   // Settings State
   const [useFixedDuration, setUseFixedDuration] = useState(() => {
@@ -559,7 +621,7 @@ function App() {
   const [isPreparingPreview, setIsPreparingPreview] = useState(false);
   const [previewProgressPercent, setPreviewProgressPercent] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
-  const [exportMode, setExportMode] = useState<'clips' | 'full'>('clips');
+  const [exportMode, setExportMode] = useState<'clips' | 'full' | 'split'>('clips');
   const [exportProgressPercent, setExportProgressPercent] = useState<number | null>(null);
   const [exportProgressClip, setExportProgressClip] = useState<{ current: number; total: number } | null>(null);
   const [usingCompatiblePreview, setUsingCompatiblePreview] = useState(false);
@@ -787,12 +849,7 @@ function App() {
 
   const enqueueVideos = useCallback((inputFiles: FileList | File[]) => {
     const files = Array.from(inputFiles);
-    const videoExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.webm', '.ts', '.m4s'];
-    const validFiles = files.filter((file) => {
-      const fileName = file.name.toLowerCase();
-      const hasVideoExtension = videoExtensions.some((ext) => fileName.endsWith(ext));
-      return file.type.startsWith('video/') || hasVideoExtension;
-    });
+    const validFiles = files.filter((file) => isSupportedVideoFile(file));
 
     if (validFiles.length === 0) {
       alert(t('uploadVideoAlert'));
@@ -1320,6 +1377,111 @@ function App() {
     e.target.value = '';
   };
 
+  const handleQuickSplitSourceChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    e.target.value = '';
+
+    if (!selectedFile) {
+      return;
+    }
+
+    if (!isSupportedVideoFile(selectedFile)) {
+      alert(t('uploadVideoAlert'));
+      return;
+    }
+
+    const sourcePath = (selectedFile as File & { path?: string }).path ?? '';
+    if (!sourcePath) {
+      alert(t('pathError'));
+      return;
+    }
+
+    setQuickSplitSourcePath(sourcePath);
+    setQuickSplitSourceName(getFileNameFromPath(sourcePath));
+    setQuickSplitSourceSizeBytes(selectedFile.size);
+  }, [t]);
+
+  const runQuickSplitBySize = useCallback(async () => {
+    try {
+      if (!quickSplitSourcePath) {
+        alert(t('quickSplitNeedSource'));
+        return;
+      }
+
+      const normalizedTargetSizeMb = Number(quickSplitTargetSizeMb);
+      if (!Number.isFinite(normalizedTargetSizeMb) || normalizedTargetSizeMb <= 0) {
+        alert(t('quickSplitInvalidTarget'));
+        return;
+      }
+
+      const outputDir = await window.ipcRenderer.showOpenDialog();
+      if (!outputDir) {
+        return;
+      }
+
+      clearExportProgressTimer();
+      const jobId = `split-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      activeExportJobIdRef.current = jobId;
+      activeExportContextRef.current = null;
+      setExportMode('split');
+      setExportProgressPercent(0);
+      setExportProgressClip({ current: 0, total: 0 });
+      setIsExporting(true);
+      let splitCompleted = false;
+
+      try {
+        const res = await window.ipcRenderer.processSizeSplit({
+          filePath: quickSplitSourcePath,
+          outputDir,
+          targetSizeMb: normalizedTargetSizeMb,
+          jobId
+        });
+
+        splitCompleted = true;
+        const successCount = res.results.filter((result) => result.success).length;
+        if (!res.success || successCount === 0 || successCount !== res.results.length) {
+          if (res.error) {
+            alert(t('quickSplitFailed') + res.error);
+          } else {
+            alert(t('exportFailed'));
+          }
+        } else {
+          alert(t('quickSplitSuccess', { count: successCount }));
+        }
+      } finally {
+        setIsExporting(false);
+        if (activeExportJobIdRef.current === jobId) {
+          activeExportJobIdRef.current = null;
+          activeExportContextRef.current = null;
+          if (splitCompleted) {
+            setExportProgressPercent(100);
+            clearExportProgressTimer();
+            exportProgressHideTimerRef.current = window.setTimeout(() => {
+              if (activeExportJobIdRef.current === null) {
+                setExportProgressPercent(null);
+                setExportProgressClip(null);
+              }
+              exportProgressHideTimerRef.current = null;
+            }, 400);
+          } else {
+            setExportProgressPercent(null);
+            setExportProgressClip(null);
+          }
+        }
+      }
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setIsExporting(false);
+      activeExportJobIdRef.current = null;
+      activeExportContextRef.current = null;
+      clearExportProgressTimer();
+      setExportProgressPercent(null);
+      setExportProgressClip(null);
+      console.error('Size split export error:', error);
+      alert(t('quickSplitFailed') + errorMessage);
+    }
+  }, [clearExportProgressTimer, quickSplitSourcePath, quickSplitTargetSizeMb, t]);
+
   const handleImportLut = useCallback(async () => {
     try {
       const selectedLutPath = await window.ipcRenderer.showOpenLutDialog();
@@ -1536,6 +1698,16 @@ function App() {
   const lutFileName = hasLutFile ? getFileNameFromPath(normalizedLutPath) : t('lutNotSelected');
   const previewLoadingText = t('preparingPreview');
   const queueVideoCountLabel = t('queueVideoCount', { count: videoQueue.length });
+  const quickSplitSourceDisplayName = quickSplitSourceName || t('quickSplitNoSource');
+  const quickSplitSourceSizeLabel = quickSplitSourceSizeBytes !== null
+    ? formatFileSize(quickSplitSourceSizeBytes)
+    : '--';
+  const isQuickSplitPanelOpen = activeQuickAction === 'split-by-size';
+  const exportProgressLabel = exportMode === 'full'
+    ? t('exportingVideos')
+    : exportMode === 'split'
+      ? t('quickSplitting')
+      : t('exportingClips');
 
   return (
     <div
@@ -1740,7 +1912,7 @@ function App() {
                   id="queue-file-upload"
                   className="hidden"
                   multiple
-                  accept="video/*,.mp4,.mov,.avi,.mkv,.flv,.wmv,.webm,.ts,.m4s"
+                  accept={VIDEO_FILE_ACCEPT}
                   onChange={handleChange}
                 />
                 <Button
@@ -1877,7 +2049,7 @@ function App() {
         )}>
           <div className="w-72 rounded-xl border border-white/10 bg-zinc-900/85 backdrop-blur-xl shadow-2xl p-3">
             <div className="flex items-center justify-between text-xs mb-2">
-              <span className="text-zinc-200">{exportMode === 'full' ? t('exportingVideos') : t('exportingClips')}</span>
+              <span className="text-zinc-200">{exportProgressLabel}</span>
               <div className="flex items-center gap-2">
                 {exportProgressClip && exportProgressClip.total > 0 && (
                   <span className="font-mono text-zinc-400">
@@ -1901,21 +2073,156 @@ function App() {
       {/* Main Content */}
       <main className="pt-14 flex-1 flex overflow-hidden">
         {!activeQueueItem ? (
-          <div
-            className={cn(
-              "flex-1 m-6 flex flex-col items-center justify-center border-2 border-dashed rounded-3xl transition-all duration-300 gap-6 bg-zinc-900/30",
-              dragActive ? "border-blue-500 bg-blue-500/10" : "border-zinc-800 hover:border-zinc-700"
-            )}
-            onDragEnter={handleDrag}
-            onDragLeave={handleDrag}
-            onDragOver={handleDrag}
-            onDrop={handleDrop}
-          >
-            <div className="flex flex-col items-center text-center space-y-4">
-              <Upload className="w-12 h-12 mx-auto text-zinc-600" />
-              <h2 className="text-2xl font-semibold text-white">{t('dropVideo')}</h2>
-              <input type="file" className="hidden" id="file-upload" multiple accept="video/*,.mp4,.mov,.avi,.mkv,.flv,.wmv,.webm,.ts,.m4s" onChange={handleChange} />
-              <Button onClick={() => document.getElementById('file-upload')?.click()}>{t('selectVideo')}</Button>
+          <div className="flex-1 m-6 rounded-3xl border border-white/10 bg-zinc-900/20 p-4 sm:p-5 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-4 min-h-0">
+            <div
+              className={cn(
+                "flex flex-col items-center justify-center border-2 border-dashed rounded-2xl transition-all duration-300 gap-6 bg-zinc-900/30 min-h-[360px]",
+                dragActive ? "border-blue-500/90 bg-blue-500/10" : "border-zinc-700 hover:border-zinc-600"
+              )}
+              onDragEnter={handleDrag}
+              onDragLeave={handleDrag}
+              onDragOver={handleDrag}
+              onDrop={handleDrop}
+            >
+              <div className="flex flex-col items-center text-center space-y-4">
+                <Upload className="w-12 h-12 mx-auto text-zinc-600" />
+                <h2 className="text-2xl font-semibold text-white">{t('dropVideo')}</h2>
+                <input type="file" className="hidden" id="file-upload" multiple accept={VIDEO_FILE_ACCEPT} onChange={handleChange} />
+                <Button onClick={() => document.getElementById('file-upload')?.click()}>{t('selectVideo')}</Button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-zinc-900/55 p-4 sm:p-5 flex flex-col min-h-[360px]">
+              <div className="pb-3 border-b border-white/10 space-y-1.5">
+                <p className="text-lg font-semibold text-zinc-100">{t('quickActions')}</p>
+                <p className="text-xs text-zinc-400 leading-relaxed">{t('quickActionsDesc')}</p>
+              </div>
+
+              <div className="mt-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveQuickAction((prev) => prev === 'split-by-size' ? null : 'split-by-size');
+                  }}
+                  className={cn(
+                    "group w-full rounded-xl border px-3 py-3 flex items-center gap-3 text-left transition-all",
+                    isQuickSplitPanelOpen
+                      ? "border-cyan-400/50 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(34,211,238,0.16)]"
+                      : "border-white/10 bg-zinc-950/45 hover:border-cyan-500/40 hover:bg-cyan-500/5"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "h-6 min-w-6 px-1 rounded-md flex items-center justify-center text-xs font-semibold font-mono",
+                      isQuickSplitPanelOpen ? "bg-cyan-300 text-zinc-900" : "bg-zinc-800 text-zinc-300"
+                    )}
+                  >
+                    1
+                  </span>
+                  <span className="flex-1 text-sm font-medium text-zinc-100">
+                    {t('quickSplitButtonLabel')}
+                  </span>
+                  {isQuickSplitPanelOpen ? (
+                    <ChevronDown className="w-4 h-4 text-cyan-300" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-cyan-300 transition-colors" />
+                  )}
+                </button>
+              </div>
+
+              <div
+                className={cn(
+                  "grid transition-all duration-300 ease-out",
+                  isQuickSplitPanelOpen ? "grid-rows-[1fr] opacity-100 mt-3" : "grid-rows-[0fr] opacity-0 mt-0 pointer-events-none"
+                )}
+              >
+                <div className="overflow-hidden">
+                  <div className="rounded-xl border border-cyan-500/20 bg-zinc-950/65 p-4 space-y-4">
+                    <p className="text-xs text-zinc-400 leading-relaxed">{t('quickSplitBySizeDesc')}</p>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-zinc-200">{t('quickSplitTargetSize')}</label>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          min={MIN_SPLIT_TARGET_SIZE_MB}
+                          max={MAX_SPLIT_TARGET_SIZE_MB}
+                          step={1}
+                          value={quickSplitTargetSizeMb}
+                          onChange={(event) => {
+                            const nextValue = Number(event.target.value);
+                            if (!Number.isFinite(nextValue)) {
+                              setQuickSplitTargetSizeMb(MIN_SPLIT_TARGET_SIZE_MB);
+                              return;
+                            }
+                            setQuickSplitTargetSizeMb(nextValue);
+                          }}
+                          onBlur={(event) => {
+                            const nextValue = Number(event.target.value);
+                            if (!Number.isFinite(nextValue) || nextValue < MIN_SPLIT_TARGET_SIZE_MB) {
+                              setQuickSplitTargetSizeMb(DEFAULT_SPLIT_TARGET_SIZE_MB);
+                              return;
+                            }
+                            setQuickSplitTargetSizeMb(Math.min(MAX_SPLIT_TARGET_SIZE_MB, Math.round(nextValue)));
+                          }}
+                          className="w-full h-9 rounded-lg bg-zinc-800 border border-white/10 pl-3 pr-10 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40 font-mono"
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-zinc-400">MB</span>
+                      </div>
+                      <p className="text-[11px] text-zinc-500">{t('quickSplitTargetHint')}</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs font-medium text-zinc-200">{t('quickSplitSourceFile')}</label>
+                        <span
+                          className={cn(
+                            "max-w-[60%] truncate text-[11px] font-mono text-right",
+                            quickSplitSourcePath ? "text-zinc-300" : "text-zinc-500"
+                          )}
+                          title={quickSplitSourceDisplayName}
+                        >
+                          {quickSplitSourceDisplayName}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5">
+                        <span className="text-[11px] text-zinc-400">{t('quickSplitSourceSize')}</span>
+                        <span className="text-[11px] font-mono text-zinc-200">{quickSplitSourceSizeLabel}</span>
+                      </div>
+
+                      <input
+                        type="file"
+                        className="hidden"
+                        id="quick-split-file-upload"
+                        accept={VIDEO_FILE_ACCEPT}
+                        onChange={handleQuickSplitSourceChange}
+                      />
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          className="h-9 px-3 text-xs shrink-0"
+                          onClick={() => document.getElementById('quick-split-file-upload')?.click()}
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          {t('quickSplitChooseSource')}
+                        </Button>
+                        <Button
+                          className="h-9 flex-1 text-sm"
+                          disabled={isExporting || !quickSplitSourcePath}
+                          onClick={() => {
+                            void runQuickSplitBySize();
+                          }}
+                        >
+                          <Scissors className="w-4 h-4" />
+                          {isExporting && exportMode === 'split'
+                            ? `${t('quickSplitting')} ${Math.round(exportProgressPercent ?? 0)}%`
+                            : t('quickSplitRun')}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         ) : (

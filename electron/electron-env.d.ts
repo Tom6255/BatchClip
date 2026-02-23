@@ -50,6 +50,22 @@ interface Window {
       }>;
     }>;
 
+    processSizeSplit: (opts: {
+      filePath: string;
+      outputDir: string;
+      targetSizeMb: number;
+      jobId?: string;
+    }) => Promise<{
+      success: boolean;
+      error?: string;
+      results: Array<{
+        id: string;
+        success: boolean;
+        path?: string;
+        error?: string;
+      }>;
+    }>;
+
     preparePreview: (opts: {
       filePath: string;
       forceProxy?: boolean;

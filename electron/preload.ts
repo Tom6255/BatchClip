@@ -37,6 +37,13 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     jobId?: string
   }) => ipcRenderer.invoke('process-lut-full-batch', opts),
 
+  processSizeSplit: (opts: {
+    filePath: string,
+    outputDir: string,
+    targetSizeMb: number,
+    jobId?: string
+  }) => ipcRenderer.invoke('process-size-split', opts),
+
   preparePreview: (opts: {
     filePath: string,
     forceProxy?: boolean,
