@@ -1,7 +1,7 @@
 {
   "name": "batchclip",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "BatchClip - 视频批量剪辑与 LUT 导出工具",
   "author": "Tom6255",
   "type": "module",

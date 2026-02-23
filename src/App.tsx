@@ -1,8 +1,15 @@
-﻿import { memo, useState, useRef, useEffect, useCallback, type ButtonHTMLAttributes } from 'react';
-import { Upload, X, Zap, Download, Trash2, Scissors, Settings as SettingsIcon, List, Plus, Tag, ChevronDown, ChevronRight } from 'lucide-react';
+﻿import { memo, useState, useRef, useEffect, useCallback } from 'react';
+import { Upload, X, Zap, Download, Trash2, Scissors, Settings as SettingsIcon, List, Plus, Tag } from 'lucide-react';
 import { cn } from './lib/utils';
 import VideoPlayer, { VideoPlayerRef } from './components/VideoPlayer';
 import Timeline from './components/Timeline';
+import Button from './components/ui/Button';
+import QuickSplitBySizeFeature from './components/quick-actions/QuickSplitBySizeFeature';
+import QuickLutBatchFeature, {
+  QuickLutPreviewOverlay,
+  QuickLutPreviewVideoListModal,
+  type QuickLutBatchVideoItem
+} from './components/quick-actions/QuickLutBatchFeature';
 import { v4 as uuidv4 } from 'uuid';
 
 const DEFAULT_FIXED_DURATION = 3.9;
@@ -152,7 +159,6 @@ const translations = {
     exportingVideos: 'Exporting videos...',
     quickActions: 'Quick Actions',
     quickActionsDesc: 'Pick a feature button to open its parameter panel.',
-    quickActionSelect: 'Choose a quick function below.',
     quickSplitBySize: 'Auto Split by Size',
     quickSplitButtonLabel: 'Auto split clips by target file size',
     quickSplitBySizeDesc: 'Split one source video into sequential parts by target size (MB) without changing resolution or bitrate.',
@@ -169,7 +175,7 @@ const translations = {
     quickSplitFailed: 'Size split failed: ',
     quickSplitting: 'Splitting by size...',
     quickLutBatchButtonLabel: 'Batch apply LUT and export videos',
-    quickLutBatchDesc: 'Batch export selected videos with one LUT preset. Encoder acceleration uses platform GPU first and falls back to CPU automatically.',
+    quickLutBatchDesc: 'Batch export selected videos with one LUT preset. ',
     quickLutBatchSelectVideos: 'Select Videos',
     quickLutBatchClearVideos: 'Clear',
     quickLutBatchVideosLabel: 'Videos',
@@ -189,7 +195,7 @@ const translations = {
     quickLutPreviewTitle: 'LUT Live Preview',
     quickLutPreviewVideoList: 'Video List',
     quickLutPreviewRealtime: 'Realtime Preview',
-    quickLutPreviewRealtimeDesc: 'Enable GPU-accelerated LUT preview in the left panel.',
+    quickLutPreviewRealtimeDesc: 'Enable realtime preview in the left panel.',
     quickLutPreviewOff: 'Realtime preview is currently disabled.',
     quickLutPreviewNoVideo: 'Select videos on the right to start preview.',
     quickLutPreviewUseCompatible: 'Use Compatible Preview',
@@ -264,7 +270,6 @@ const translations = {
     exportingVideos: '正在导出视频...',
     quickActions: '快捷功能',
     quickActionsDesc: '点击功能按钮后展开二级参数面板。',
-    quickActionSelect: '请选择下方快捷功能。',
     quickSplitBySize: '按体积自动分割',
     quickSplitButtonLabel: '按照视频体积大小进行自动片段裁剪',
     quickSplitBySizeDesc: '按目标大小(MB)将单个视频顺序分段，保持原分辨率与码率，不重新编码。',
@@ -281,7 +286,7 @@ const translations = {
     quickSplitFailed: '自动分割失败: ',
     quickSplitting: '正在按体积分割...',
     quickLutBatchButtonLabel: '批量套用 LUT 并导出视频',
-    quickLutBatchDesc: '对所选视频批量套用同一个 LUT 进行导出。优先使用平台 GPU 加速，失败自动无感回退 CPU。',
+    quickLutBatchDesc: '对所选视频批量套用同一个 LUT 进行导出。',
     quickLutBatchSelectVideos: '选择视频',
     quickLutBatchClearVideos: '清空',
     quickLutBatchVideosLabel: '视频数量',
@@ -301,39 +306,13 @@ const translations = {
     quickLutPreviewTitle: 'LUT 实时预览',
     quickLutPreviewVideoList: '视频列表',
     quickLutPreviewRealtime: '实时预览',
-    quickLutPreviewRealtimeDesc: '在左侧面板启用 GPU 加速 LUT 实时预览。',
+    quickLutPreviewRealtimeDesc: '在左侧面板启用实时预览。',
     quickLutPreviewOff: '实时预览当前已关闭。',
     quickLutPreviewNoVideo: '请先在右侧选择视频后开始预览。',
     quickLutPreviewUseCompatible: '启用兼容预览',
     quickLutPreviewCompatibleMode: '兼容预览模式',
     quickLutPreviewListTitle: '预览视频列表'
   }
-};
-
-type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
-
-interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: ButtonVariant;
-}
-
-// Reusable Button Component
-const Button = ({ className, variant = 'primary', ...props }: ButtonProps) => {
-  const variants = {
-    primary: "bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/30 disabled:opacity-50 disabled:cursor-not-allowed",
-    secondary: "bg-zinc-800 hover:bg-zinc-700 text-zinc-300",
-    ghost: "bg-transparent hover:bg-zinc-800/50 text-zinc-400 hover:text-white",
-    danger: "bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20"
-  };
-  return (
-    <button
-      className={cn(
-        "px-4 py-2 rounded-lg font-medium transition-all duration-200 active:scale-95 flex items-center justify-center gap-2",
-        variants[variant as keyof typeof variants],
-        className
-      )}
-      {...props}
-    />
-  );
 };
 
 // Types
@@ -351,13 +330,6 @@ interface QueueVideoItem {
   displayName: string;
   segments: Segment[];
   uniqueKey: string;
-}
-
-interface QuickLutBatchVideoItem {
-  id: string;
-  filePath: string;
-  displayName: string;
-  sizeBytes: number;
 }
 
 const formatTime = (seconds: number) => {
@@ -2450,61 +2422,15 @@ function App() {
         </div>
       )}
 
-      {showQuickLutPreviewVideoList && isQuickLutBatchPanelOpen && (
-        <div className="fixed inset-0 z-[105] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowQuickLutPreviewVideoList(false)} />
-          <div className="relative w-full max-w-lg bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="p-4 border-b border-white/5 flex items-center justify-between">
-              <h3 className="text-lg font-semibold flex items-center gap-2">
-                <List className="w-5 h-5 text-emerald-400" />
-                {t('quickLutPreviewListTitle')}
-              </h3>
-              <Button variant="ghost" className="h-8 w-8 p-0" onClick={() => setShowQuickLutPreviewVideoList(false)}>
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-
-            <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2 custom-scrollbar">
-              {quickLutBatchVideos.length === 0 ? (
-                <div className="text-center text-zinc-500 py-8 text-sm">
-                  {t('quickLutBatchNoVideos')}
-                </div>
-              ) : (
-                quickLutBatchVideos.map((videoItem) => {
-                  const isActive = videoItem.id === quickLutPreviewVideoId;
-                  return (
-                    <div
-                      key={videoItem.id}
-                      className={cn(
-                        'rounded-lg border p-3 flex items-center justify-between gap-3 transition-colors',
-                        isActive ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-white/10 bg-zinc-950/40'
-                      )}
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm text-zinc-200 truncate" title={videoItem.displayName}>{videoItem.displayName}</p>
-                        <p className="text-[11px] text-zinc-500 mt-1 font-mono">{formatFileSize(videoItem.sizeBytes)}</p>
-                      </div>
-                      {isActive ? (
-                        <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          {t('currentVideo')}
-                        </span>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          className="h-7 px-2 text-[11px]"
-                          onClick={() => switchQuickLutPreviewVideo(videoItem.id)}
-                        >
-                          {t('switchVideo')}
-                        </Button>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <QuickLutPreviewVideoListModal
+        isOpen={showQuickLutPreviewVideoList && isQuickLutBatchPanelOpen}
+        t={t}
+        videos={quickLutBatchVideos}
+        activeVideoId={quickLutPreviewVideoId}
+        onClose={() => setShowQuickLutPreviewVideoList(false)}
+        onSwitchVideo={switchQuickLutPreviewVideo}
+        formatFileSize={formatFileSize}
+      />
 
       {showLutFullExportConfirm && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
@@ -2614,94 +2540,35 @@ function App() {
                 <Button onClick={() => document.getElementById('file-upload')?.click()}>{t('selectVideo')}</Button>
               </div>
 
-              {isQuickLutBatchPanelOpen && (
-                <div className="absolute inset-0 z-10 rounded-2xl border border-emerald-500/30 bg-zinc-950/92 p-3 sm:p-4 flex flex-col gap-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-zinc-100">{t('quickLutPreviewTitle')}</p>
-                      <p
-                        className="text-[11px] text-zinc-500 truncate mt-0.5"
-                        title={quickLutPreviewActiveVideo ? quickLutPreviewActiveVideo.displayName : ''}
-                      >
-                        {quickLutPreviewActiveVideo ? quickLutPreviewActiveVideo.displayName : t('quickLutPreviewNoVideo')}
-                      </p>
-                    </div>
-                    <Button
-                      variant="secondary"
-                      className="h-8 px-3 text-xs shrink-0"
-                      onClick={() => setShowQuickLutPreviewVideoList(true)}
-                      disabled={quickLutBatchVideos.length === 0}
-                    >
-                      <List className="w-3.5 h-3.5" />
-                      {t('quickLutPreviewVideoList')}
-                    </Button>
-                  </div>
-
-                  <div className="flex-1 min-h-0 rounded-xl border border-white/10 bg-black/70 overflow-hidden relative">
-                    {quickLutRealtimePreviewEnabled ? (
-                      quickLutPreviewSrc ? (
-                        <VideoPlayer
-                          ref={quickLutPreviewPlayerRef}
-                          src={quickLutPreviewSrc}
-                          isPlaying={quickLutPreviewPlaying}
-                          onPlayPause={() => setQuickLutPreviewPlaying((prev) => !prev)}
-                          onTimeUpdate={(time) => setQuickLutPreviewCurrentTime(time)}
-                          onDurationChange={(nextDuration) => setQuickLutPreviewDuration(nextDuration)}
-                          onEnded={() => setQuickLutPreviewPlaying(false)}
-                          onDecodeIssue={handleQuickLutPreviewDecodeIssue}
-                          externalLoadingText={quickLutPreviewExternalLoadingText}
-                          lutEnabled={quickLutRealtimePreviewEnabled && Boolean(quickLutBatchLutPath)}
-                          lutPath={quickLutRealtimePreviewEnabled && quickLutBatchLutPath ? quickLutBatchLutPath : null}
-                          lutIntensity={clampLutIntensity(quickLutBatchLutIntensity)}
-                        />
-                      ) : (
-                        <div className="h-full w-full flex items-center justify-center text-center px-4">
-                          <p className="text-sm text-zinc-500">{t('quickLutPreviewNoVideo')}</p>
-                        </div>
-                      )
-                    ) : (
-                      <div className="h-full w-full flex items-center justify-center text-center px-4">
-                        <p className="text-sm text-zinc-500">{t('quickLutPreviewOff')}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  <input
-                    type="range"
-                    min={0}
-                    max={Math.max(quickLutPreviewDuration, 0)}
-                    step={0.01}
-                    value={Math.min(quickLutPreviewCurrentTime, Math.max(quickLutPreviewDuration, 0))}
-                    onChange={(event) => handleQuickLutPreviewSeek(Number(event.target.value))}
-                    disabled={!quickLutRealtimePreviewEnabled || !quickLutPreviewSrc || quickLutPreviewDuration <= 0}
-                    className="w-full accent-emerald-400 disabled:opacity-40"
-                    aria-label="Quick LUT preview progress"
-                  />
-
-                  <div className="flex items-center justify-between gap-2 text-[11px]">
-                    <div className="flex items-center gap-2 text-zinc-400 font-mono">
-                      <span>{formatTime(quickLutPreviewCurrentTime)}</span>
-                      <span>/</span>
-                      <span>{formatTime(quickLutPreviewDuration)}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {!quickLutPreviewUsingCompatible && quickLutPreviewCompatibleSuggested && quickLutRealtimePreviewEnabled && (
-                        <Button
-                          variant="ghost"
-                          className="h-6 px-2 text-[11px] text-amber-400 hover:text-amber-300"
-                          onClick={switchToQuickLutCompatiblePreview}
-                          disabled={quickLutPreviewPreparing}
-                        >
-                          {t('quickLutPreviewUseCompatible')}
-                        </Button>
-                      )}
-                      {quickLutPreviewUsingCompatible && (
-                        <span className="text-amber-400">{t('quickLutPreviewCompatibleMode')}</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
+              <QuickLutPreviewOverlay
+                isOpen={isQuickLutBatchPanelOpen}
+                t={t}
+                activeVideoDisplayName={quickLutPreviewActiveVideo?.displayName ?? ''}
+                hasVideos={quickLutBatchVideos.length > 0}
+                onOpenVideoList={() => setShowQuickLutPreviewVideoList(true)}
+                previewPlayerRef={quickLutPreviewPlayerRef}
+                quickLutRealtimePreviewEnabled={quickLutRealtimePreviewEnabled}
+                quickLutPreviewSrc={quickLutPreviewSrc}
+                quickLutPreviewPlaying={quickLutPreviewPlaying}
+                onTogglePlaying={() => setQuickLutPreviewPlaying((prev) => !prev)}
+                onTimeUpdate={setQuickLutPreviewCurrentTime}
+                onDurationChange={setQuickLutPreviewDuration}
+                onEnded={() => setQuickLutPreviewPlaying(false)}
+                onDecodeIssue={handleQuickLutPreviewDecodeIssue}
+                quickLutPreviewExternalLoadingText={quickLutPreviewExternalLoadingText}
+                lutEnabled={quickLutRealtimePreviewEnabled && Boolean(quickLutBatchLutPath)}
+                lutPath={quickLutRealtimePreviewEnabled && quickLutBatchLutPath ? quickLutBatchLutPath : null}
+                lutIntensity={clampLutIntensity(quickLutBatchLutIntensity)}
+                quickLutPreviewCurrentTime={quickLutPreviewCurrentTime}
+                quickLutPreviewDuration={quickLutPreviewDuration}
+                quickLutPreviewCurrentTimeLabel={formatTime(quickLutPreviewCurrentTime)}
+                quickLutPreviewDurationLabel={formatTime(quickLutPreviewDuration)}
+                onSeek={handleQuickLutPreviewSeek}
+                quickLutPreviewUsingCompatible={quickLutPreviewUsingCompatible}
+                quickLutPreviewCompatibleSuggested={quickLutPreviewCompatibleSuggested}
+                onUseCompatiblePreview={switchToQuickLutCompatiblePreview}
+                quickLutPreviewPreparing={quickLutPreviewPreparing}
+              />
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-zinc-900/55 p-4 sm:p-5 flex flex-col min-h-[360px] max-h-full overflow-hidden">
@@ -2711,338 +2578,60 @@ function App() {
               </div>
 
               <div className="mt-4 flex-1 min-h-0 overflow-y-auto pr-1 custom-scrollbar">
-                <div>
-                <button
-                  type="button"
-                  onClick={() => {
+                <QuickSplitBySizeFeature
+                  isOpen={isQuickSplitPanelOpen}
+                  onToggle={() => {
                     setActiveQuickAction((prev) => prev === 'split-by-size' ? null : 'split-by-size');
                   }}
-                  className={cn(
-                    "group w-full rounded-xl border px-3 py-3 flex items-center gap-3 text-left transition-all",
-                    isQuickSplitPanelOpen
-                      ? "border-cyan-400/50 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(34,211,238,0.16)]"
-                      : "border-white/10 bg-zinc-950/45 hover:border-cyan-500/40 hover:bg-cyan-500/5"
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "h-6 min-w-6 px-1 rounded-md flex items-center justify-center text-xs font-semibold font-mono",
-                      isQuickSplitPanelOpen ? "bg-cyan-300 text-zinc-900" : "bg-zinc-800 text-zinc-300"
-                    )}
-                  >
-                    1
-                  </span>
-                  <span className="flex-1 text-sm font-medium text-zinc-100">
-                    {t('quickSplitButtonLabel')}
-                  </span>
-                  {isQuickSplitPanelOpen ? (
-                    <ChevronDown className="w-4 h-4 text-cyan-300" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-cyan-300 transition-colors" />
-                  )}
-                </button>
-              </div>
+                  t={t}
+                  quickSplitTargetSizeMb={quickSplitTargetSizeMb}
+                  setQuickSplitTargetSizeMb={setQuickSplitTargetSizeMb}
+                  defaultSplitTargetSizeMb={DEFAULT_SPLIT_TARGET_SIZE_MB}
+                  minSplitTargetSizeMb={MIN_SPLIT_TARGET_SIZE_MB}
+                  maxSplitTargetSizeMb={MAX_SPLIT_TARGET_SIZE_MB}
+                  quickSplitSourcePath={quickSplitSourcePath}
+                  quickSplitSourceDisplayName={quickSplitSourceDisplayName}
+                  quickSplitSourceSizeLabel={quickSplitSourceSizeLabel}
+                  videoFileAccept={VIDEO_FILE_ACCEPT}
+                  onSourceChange={handleQuickSplitSourceChange}
+                  onRun={() => {
+                    void runQuickSplitBySize();
+                  }}
+                  isExporting={isExporting}
+                  exportMode={exportMode}
+                  exportProgressPercent={exportProgressPercent}
+                />
 
-              <div
-                className={cn(
-                  "grid transition-all duration-300 ease-out",
-                  isQuickSplitPanelOpen ? "grid-rows-[1fr] opacity-100 mt-3" : "grid-rows-[0fr] opacity-0 mt-0 pointer-events-none"
-                )}
-              >
-                <div className="overflow-hidden">
-                  <div className="rounded-xl border border-cyan-500/20 bg-zinc-950/65 p-4 space-y-4">
-                    <p className="text-xs text-zinc-400 leading-relaxed">{t('quickSplitBySizeDesc')}</p>
-
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-zinc-200">{t('quickSplitTargetSize')}</label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          min={MIN_SPLIT_TARGET_SIZE_MB}
-                          max={MAX_SPLIT_TARGET_SIZE_MB}
-                          step={1}
-                          value={quickSplitTargetSizeMb}
-                          onChange={(event) => {
-                            const nextValue = Number(event.target.value);
-                            if (!Number.isFinite(nextValue)) {
-                              setQuickSplitTargetSizeMb(MIN_SPLIT_TARGET_SIZE_MB);
-                              return;
-                            }
-                            setQuickSplitTargetSizeMb(nextValue);
-                          }}
-                          onBlur={(event) => {
-                            const nextValue = Number(event.target.value);
-                            if (!Number.isFinite(nextValue) || nextValue < MIN_SPLIT_TARGET_SIZE_MB) {
-                              setQuickSplitTargetSizeMb(DEFAULT_SPLIT_TARGET_SIZE_MB);
-                              return;
-                            }
-                            setQuickSplitTargetSizeMb(Math.min(MAX_SPLIT_TARGET_SIZE_MB, Math.round(nextValue)));
-                          }}
-                          className="w-full h-9 rounded-lg bg-zinc-800 border border-white/10 pl-3 pr-10 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40 font-mono"
-                        />
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-zinc-400">MB</span>
-                      </div>
-                      <p className="text-[11px] text-zinc-500">{t('quickSplitTargetHint')}</p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="text-xs font-medium text-zinc-200">{t('quickSplitSourceFile')}</label>
-                        <span
-                          className={cn(
-                            "max-w-[60%] truncate text-[11px] font-mono text-right",
-                            quickSplitSourcePath ? "text-zinc-300" : "text-zinc-500"
-                          )}
-                          title={quickSplitSourceDisplayName}
-                        >
-                          {quickSplitSourceDisplayName}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5">
-                        <span className="text-[11px] text-zinc-400">{t('quickSplitSourceSize')}</span>
-                        <span className="text-[11px] font-mono text-zinc-200">{quickSplitSourceSizeLabel}</span>
-                      </div>
-
-                      <input
-                        type="file"
-                        className="hidden"
-                        id="quick-split-file-upload"
-                        accept={VIDEO_FILE_ACCEPT}
-                        onChange={handleQuickSplitSourceChange}
-                      />
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="secondary"
-                          className="h-9 px-3 text-xs shrink-0"
-                          onClick={() => document.getElementById('quick-split-file-upload')?.click()}
-                        >
-                          <Upload className="w-3.5 h-3.5" />
-                          {t('quickSplitChooseSource')}
-                        </Button>
-                        <Button
-                          className="h-9 flex-1 text-sm"
-                          disabled={isExporting || !quickSplitSourcePath}
-                          onClick={() => {
-                            void runQuickSplitBySize();
-                          }}
-                        >
-                          <Scissors className="w-4 h-4" />
-                          {isExporting && exportMode === 'split'
-                            ? `${t('quickSplitting')} ${Math.round(exportProgressPercent ?? 0)}%`
-                            : t('quickSplitRun')}
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-3">
-                <button
-                  type="button"
-                  onClick={() => {
+                <QuickLutBatchFeature
+                  isOpen={isQuickLutBatchPanelOpen}
+                  onToggle={() => {
                     setActiveQuickAction((prev) => prev === 'lut-full-batch' ? null : 'lut-full-batch');
                   }}
-                  className={cn(
-                    "group w-full rounded-xl border px-3 py-3 flex items-center gap-3 text-left transition-all",
-                    isQuickLutBatchPanelOpen
-                      ? "border-emerald-400/50 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(16,185,129,0.16)]"
-                      : "border-white/10 bg-zinc-950/45 hover:border-emerald-500/40 hover:bg-emerald-500/5"
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "h-6 min-w-6 px-1 rounded-md flex items-center justify-center text-xs font-semibold font-mono",
-                      isQuickLutBatchPanelOpen ? "bg-emerald-300 text-zinc-900" : "bg-zinc-800 text-zinc-300"
-                    )}
-                  >
-                    2
-                  </span>
-                  <span className="flex-1 text-sm font-medium text-zinc-100">
-                    {t('quickLutBatchButtonLabel')}
-                  </span>
-                  {isQuickLutBatchPanelOpen ? (
-                    <ChevronDown className="w-4 h-4 text-emerald-300" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-emerald-300 transition-colors" />
-                  )}
-                </button>
-              </div>
-
-              <div
-                className={cn(
-                  "grid transition-all duration-300 ease-out",
-                  isQuickLutBatchPanelOpen ? "grid-rows-[1fr] opacity-100 mt-3" : "grid-rows-[0fr] opacity-0 mt-0 pointer-events-none"
-                )}
-              >
-                <div className="overflow-hidden">
-                  <div className="rounded-xl border border-emerald-500/20 bg-zinc-950/65 p-4 space-y-4">
-                    <p className="text-xs text-zinc-400 leading-relaxed">{t('quickLutBatchDesc')}</p>
-
-                    <div className="rounded-lg border border-white/10 bg-zinc-900/60 px-3 py-2.5 flex items-center justify-between gap-3">
-                      <div className="space-y-1 min-w-0">
-                        <p className="text-xs font-medium text-zinc-100">{t('quickLutPreviewRealtime')}</p>
-                        <p className="text-[11px] text-zinc-500 leading-relaxed">{t('quickLutPreviewRealtimeDesc')}</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setQuickLutRealtimePreviewEnabled((prev) => !prev)}
-                        className={cn(
-                          "w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none shrink-0",
-                          quickLutRealtimePreviewEnabled ? "bg-emerald-500" : "bg-zinc-700"
-                        )}
-                      >
-                        <div
-                          className={cn(
-                            "w-4 h-4 rounded-full bg-white transition-transform duration-200 mx-1",
-                            quickLutRealtimePreviewEnabled ? "translate-x-5" : "translate-x-0"
-                          )}
-                        />
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5 flex items-center justify-between">
-                        <span className="text-[11px] text-zinc-400">{t('quickLutBatchVideosLabel')}</span>
-                        <span className="text-[11px] font-mono text-zinc-200">{quickLutBatchVideoCountLabel}</span>
-                      </div>
-                      <div className="rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5 flex items-center justify-between">
-                        <span className="text-[11px] text-zinc-400">{t('quickLutBatchTotalSize')}</span>
-                        <span className="text-[11px] font-mono text-zinc-200">{quickLutBatchTotalSizeLabel}</span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <input
-                        type="file"
-                        className="hidden"
-                        id="quick-lut-batch-videos-upload"
-                        multiple
-                        accept={VIDEO_FILE_ACCEPT}
-                        onChange={handleQuickLutBatchVideosChange}
-                      />
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="secondary"
-                          className="h-9 px-3 text-xs"
-                          onClick={() => document.getElementById('quick-lut-batch-videos-upload')?.click()}
-                        >
-                          <Upload className="w-3.5 h-3.5" />
-                          {t('quickLutBatchSelectVideos')}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          className="h-9 px-3 text-xs text-zinc-500 hover:text-red-400"
-                          onClick={clearQuickLutBatchVideos}
-                          disabled={quickLutBatchVideos.length === 0}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          {t('quickLutBatchClearVideos')}
-                        </Button>
-                      </div>
-
-                      {quickLutBatchVideos.length === 0 ? (
-                        <p className="text-[11px] text-zinc-500">{t('quickLutBatchNoVideos')}</p>
-                      ) : (
-                        <div className="max-h-24 overflow-y-auto pr-1 space-y-1.5 custom-scrollbar">
-                          {quickLutBatchVideos.map((videoItem) => (
-                            <div
-                              key={videoItem.id}
-                              className="rounded-md border border-white/10 bg-zinc-900/70 px-2 py-1.5 flex items-center justify-between gap-2"
-                            >
-                              <span className="text-[11px] text-zinc-200 truncate" title={videoItem.displayName}>
-                                {videoItem.displayName}
-                              </span>
-                              <button
-                                type="button"
-                                className="text-zinc-500 hover:text-red-400 transition-colors"
-                                onClick={() => removeQuickLutBatchVideo(videoItem.id)}
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="text-xs font-medium text-zinc-200">{t('quickLutBatchLutFile')}</label>
-                        <span className={cn(
-                          "max-w-[60%] truncate text-[11px] font-mono text-right",
-                          quickLutBatchLutPath ? "text-zinc-300" : "text-zinc-500"
-                        )} title={quickLutBatchLutFileName}>
-                          {quickLutBatchLutFileName}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="secondary"
-                          className="h-8 px-3 text-xs"
-                          onClick={() => {
-                            void handleQuickLutBatchImportLut();
-                          }}
-                        >
-                          {t('quickLutBatchSelectLut')}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          className="h-8 px-2 text-xs text-zinc-500 hover:text-red-400"
-                          onClick={() => setQuickLutBatchLutPath('')}
-                          disabled={!quickLutBatchLutPath}
-                        >
-                          {t('quickLutBatchClearLut')}
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-zinc-200">{t('quickLutBatchIntensity')}</label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
-                          step={1}
-                          value={quickLutBatchLutIntensity}
-                          onChange={(event) => setQuickLutBatchLutIntensity(clampLutIntensity(Number(event.target.value)))}
-                          className="flex-1 accent-emerald-400"
-                        />
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          step={1}
-                          value={quickLutBatchLutIntensity}
-                          onChange={(event) => setQuickLutBatchLutIntensity(clampLutIntensity(Number(event.target.value)))}
-                          className="w-16 bg-zinc-800 border border-white/10 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 font-mono"
-                        />
-                        <span className="text-[11px] text-zinc-400">%</span>
-                      </div>
-                      <p className="text-[11px] text-zinc-500">{t('quickLutBatchAccelHint')}</p>
-                    </div>
-
-                    <Button
-                      className="w-full h-9 text-sm"
-                      disabled={isExporting || quickLutBatchVideos.length === 0 || !quickLutBatchLutPath}
-                      onClick={() => {
-                        void runQuickLutBatchExport();
-                      }}
-                    >
-                      <Download className="w-4 h-4" />
-                      {isExporting && exportMode === 'full'
-                        ? `${t('exportingVideos')} ${Math.round(exportProgressPercent ?? 0)}%`
-                        : t('quickLutBatchRun')}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-
-              {!isQuickSplitPanelOpen && !isQuickLutBatchPanelOpen && (
-                <p className="mt-3 text-[11px] text-zinc-500">{t('quickActionSelect')}</p>
-              )}
-
+                  t={t}
+                  quickLutRealtimePreviewEnabled={quickLutRealtimePreviewEnabled}
+                  onToggleRealtimePreview={() => setQuickLutRealtimePreviewEnabled((prev) => !prev)}
+                  quickLutBatchVideoCountLabel={quickLutBatchVideoCountLabel}
+                  quickLutBatchTotalSizeLabel={quickLutBatchTotalSizeLabel}
+                  quickLutBatchVideos={quickLutBatchVideos}
+                  videoFileAccept={VIDEO_FILE_ACCEPT}
+                  onVideosChange={handleQuickLutBatchVideosChange}
+                  onClearVideos={clearQuickLutBatchVideos}
+                  onRemoveVideo={removeQuickLutBatchVideo}
+                  quickLutBatchLutPath={quickLutBatchLutPath}
+                  quickLutBatchLutFileName={quickLutBatchLutFileName}
+                  onSelectLut={() => {
+                    void handleQuickLutBatchImportLut();
+                  }}
+                  onClearLut={() => setQuickLutBatchLutPath('')}
+                  quickLutBatchLutIntensity={quickLutBatchLutIntensity}
+                  onChangeLutIntensity={(value) => setQuickLutBatchLutIntensity(clampLutIntensity(value))}
+                  onRun={() => {
+                    void runQuickLutBatchExport();
+                  }}
+                  isExporting={isExporting}
+                  exportMode={exportMode}
+                  exportProgressPercent={exportProgressPercent}
+                />
               </div>
             </div>
           </div>
@@ -3315,3 +2904,4 @@ function App() {
 }
 
 export default App;
+
