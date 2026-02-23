@@ -4,7 +4,8 @@ BatchClip 是一个基于 Electron + React + TypeScript 的桌面视频批处理
 
 当前版本：`v1.0.4`
 
-![界面截图](./docs/screenshot.png)
+![界面截图](./docs/screenshot00.png)
+![界面截图](./docs/screenshot01.png)
 
 ## 功能概览
 
