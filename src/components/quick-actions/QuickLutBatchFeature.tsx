@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Download, List, Trash2, Upload, X } from 'lu
 import { cn } from '../../lib/utils';
 import VideoPlayer, { type VideoPlayerRef } from '../VideoPlayer';
 import Button from '../ui/Button';
+import type { QuickLutBatchVideoItem } from '../../features/quick-actions/types';
 
 type QuickLutBatchTextKey =
   | 'quickLutBatchButtonLabel'
@@ -30,13 +31,6 @@ type QuickLutBatchTextKey =
   | 'quickLutPreviewListTitle'
   | 'currentVideo'
   | 'switchVideo';
-
-export interface QuickLutBatchVideoItem {
-  id: string;
-  filePath: string;
-  displayName: string;
-  sizeBytes: number;
-}
 
 interface QuickLutBatchFeatureProps {
   isOpen: boolean;
