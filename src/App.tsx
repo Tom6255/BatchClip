@@ -152,6 +152,7 @@ const translations = {
     exportingVideos: 'Exporting videos...',
     quickActions: 'Quick Actions',
     quickActionsDesc: 'Pick a feature button to open its parameter panel.',
+    quickActionSelect: 'Choose a quick function below.',
     quickSplitBySize: 'Auto Split by Size',
     quickSplitButtonLabel: 'Auto split clips by target file size',
     quickSplitBySizeDesc: 'Split one source video into sequential parts by target size (MB) without changing resolution or bitrate.',
@@ -166,7 +167,34 @@ const translations = {
     quickSplitNeedSource: 'Please choose a source video first.',
     quickSplitSuccess: 'Size split complete. Exported {count} clips.',
     quickSplitFailed: 'Size split failed: ',
-    quickSplitting: 'Splitting by size...'
+    quickSplitting: 'Splitting by size...',
+    quickLutBatchButtonLabel: 'Batch apply LUT and export videos',
+    quickLutBatchDesc: 'Batch export selected videos with one LUT preset. Encoder acceleration uses platform GPU first and falls back to CPU automatically.',
+    quickLutBatchSelectVideos: 'Select Videos',
+    quickLutBatchClearVideos: 'Clear',
+    quickLutBatchVideosLabel: 'Videos',
+    quickLutBatchNoVideos: 'No videos selected yet.',
+    quickLutBatchVideoCount: '{count} videos',
+    quickLutBatchTotalSize: 'Total Size',
+    quickLutBatchLutFile: 'LUT File',
+    quickLutBatchSelectLut: 'Select LUT',
+    quickLutBatchClearLut: 'Clear LUT',
+    quickLutBatchIntensity: 'LUT Intensity',
+    quickLutBatchRun: 'Start Batch LUT Export',
+    quickLutBatchNeedVideos: 'Please select at least one video first.',
+    quickLutBatchNeedLut: 'Please select a LUT file first.',
+    quickLutBatchSuccess: 'Batch LUT export complete. Exported {count} videos.',
+    quickLutBatchFailed: 'Batch LUT export failed: ',
+    quickLutBatchAccelHint: 'Windows: NVENC/QSV/AMF -> CPU fallback. macOS: VideoToolbox -> CPU fallback.',
+    quickLutPreviewTitle: 'LUT Live Preview',
+    quickLutPreviewVideoList: 'Video List',
+    quickLutPreviewRealtime: 'Realtime Preview',
+    quickLutPreviewRealtimeDesc: 'Enable GPU-accelerated LUT preview in the left panel.',
+    quickLutPreviewOff: 'Realtime preview is currently disabled.',
+    quickLutPreviewNoVideo: 'Select videos on the right to start preview.',
+    quickLutPreviewUseCompatible: 'Use Compatible Preview',
+    quickLutPreviewCompatibleMode: 'Compatible Preview',
+    quickLutPreviewListTitle: 'Preview Video List'
   },
   zh: {
     runningTime: '当前进度',
@@ -236,6 +264,7 @@ const translations = {
     exportingVideos: '正在导出视频...',
     quickActions: '快捷功能',
     quickActionsDesc: '点击功能按钮后展开二级参数面板。',
+    quickActionSelect: '请选择下方快捷功能。',
     quickSplitBySize: '按体积自动分割',
     quickSplitButtonLabel: '按照视频体积大小进行自动片段裁剪',
     quickSplitBySizeDesc: '按目标大小(MB)将单个视频顺序分段，保持原分辨率与码率，不重新编码。',
@@ -250,7 +279,34 @@ const translations = {
     quickSplitNeedSource: '请先选择一个源视频。',
     quickSplitSuccess: '自动分割完成，已导出 {count} 段视频。',
     quickSplitFailed: '自动分割失败: ',
-    quickSplitting: '正在按体积分割...'
+    quickSplitting: '正在按体积分割...',
+    quickLutBatchButtonLabel: '批量套用 LUT 并导出视频',
+    quickLutBatchDesc: '对所选视频批量套用同一个 LUT 进行导出。优先使用平台 GPU 加速，失败自动无感回退 CPU。',
+    quickLutBatchSelectVideos: '选择视频',
+    quickLutBatchClearVideos: '清空',
+    quickLutBatchVideosLabel: '视频数量',
+    quickLutBatchNoVideos: '还没有选择视频。',
+    quickLutBatchVideoCount: '{count} 个视频',
+    quickLutBatchTotalSize: '总大小',
+    quickLutBatchLutFile: 'LUT 文件',
+    quickLutBatchSelectLut: '选择 LUT',
+    quickLutBatchClearLut: '清除 LUT',
+    quickLutBatchIntensity: 'LUT 强度',
+    quickLutBatchRun: '开始批量 LUT 导出',
+    quickLutBatchNeedVideos: '请至少先选择一个视频。',
+    quickLutBatchNeedLut: '请先选择 LUT 文件。',
+    quickLutBatchSuccess: '批量 LUT 导出完成，已导出 {count} 个视频。',
+    quickLutBatchFailed: '批量 LUT 导出失败: ',
+    quickLutBatchAccelHint: 'Windows: NVENC/QSV/AMF，失败回退 CPU；macOS: VideoToolbox，失败回退 CPU。',
+    quickLutPreviewTitle: 'LUT 实时预览',
+    quickLutPreviewVideoList: '视频列表',
+    quickLutPreviewRealtime: '实时预览',
+    quickLutPreviewRealtimeDesc: '在左侧面板启用 GPU 加速 LUT 实时预览。',
+    quickLutPreviewOff: '实时预览当前已关闭。',
+    quickLutPreviewNoVideo: '请先在右侧选择视频后开始预览。',
+    quickLutPreviewUseCompatible: '启用兼容预览',
+    quickLutPreviewCompatibleMode: '兼容预览模式',
+    quickLutPreviewListTitle: '预览视频列表'
   }
 };
 
@@ -295,6 +351,13 @@ interface QueueVideoItem {
   displayName: string;
   segments: Segment[];
   uniqueKey: string;
+}
+
+interface QuickLutBatchVideoItem {
+  id: string;
+  filePath: string;
+  displayName: string;
+  sizeBytes: number;
 }
 
 const formatTime = (seconds: number) => {
@@ -531,7 +594,22 @@ function App() {
   const [quickSplitSourcePath, setQuickSplitSourcePath] = useState('');
   const [quickSplitSourceName, setQuickSplitSourceName] = useState('');
   const [quickSplitSourceSizeBytes, setQuickSplitSourceSizeBytes] = useState<number | null>(null);
-  const [activeQuickAction, setActiveQuickAction] = useState<'split-by-size' | null>(null);
+  const [quickLutBatchVideos, setQuickLutBatchVideos] = useState<QuickLutBatchVideoItem[]>([]);
+  const [quickLutBatchLutPath, setQuickLutBatchLutPath] = useState('');
+  const [quickLutBatchLutIntensity, setQuickLutBatchLutIntensity] = useState(DEFAULT_LUT_INTENSITY);
+  const [quickLutRealtimePreviewEnabled, setQuickLutRealtimePreviewEnabled] = useState(true);
+  const [quickLutPreviewVideoId, setQuickLutPreviewVideoId] = useState<string | null>(null);
+  const [quickLutPreviewSrc, setQuickLutPreviewSrc] = useState('');
+  const [quickLutPreviewFilePath, setQuickLutPreviewFilePath] = useState('');
+  const [quickLutPreviewPlaying, setQuickLutPreviewPlaying] = useState(false);
+  const [quickLutPreviewDuration, setQuickLutPreviewDuration] = useState(0);
+  const [quickLutPreviewCurrentTime, setQuickLutPreviewCurrentTime] = useState(0);
+  const [quickLutPreviewPreparing, setQuickLutPreviewPreparing] = useState(false);
+  const [quickLutPreviewProgressPercent, setQuickLutPreviewProgressPercent] = useState<number | null>(null);
+  const [quickLutPreviewUsingCompatible, setQuickLutPreviewUsingCompatible] = useState(false);
+  const [quickLutPreviewCompatibleSuggested, setQuickLutPreviewCompatibleSuggested] = useState(false);
+  const [showQuickLutPreviewVideoList, setShowQuickLutPreviewVideoList] = useState(false);
+  const [activeQuickAction, setActiveQuickAction] = useState<'split-by-size' | 'lut-full-batch' | null>(null);
 
   // Settings State
   const [useFixedDuration, setUseFixedDuration] = useState(() => {
@@ -614,6 +692,7 @@ function App() {
   const [pendingStart, setPendingStart] = useState<number | null>(null);
 
   const videoPlayerRef = useRef<VideoPlayerRef>(null);
+  const quickLutPreviewPlayerRef = useRef<VideoPlayerRef>(null);
 
   // Reset state when file changes
   const [videoSrc, setVideoSrc] = useState<string>("");
@@ -634,6 +713,11 @@ function App() {
   const previewProgressHideTimerRef = useRef<number | null>(null);
   const exportProgressHideTimerRef = useRef<number | null>(null);
   const hasAutoFallbackTriedRef = useRef(false);
+  const quickLutPreviewProxyPathRef = useRef<string | null>(null);
+  const quickLutPreviewJobIdRef = useRef<string | null>(null);
+  const quickLutPreviewPreparingRef = useRef(false);
+  const quickLutPreviewProgressHideTimerRef = useRef<number | null>(null);
+  const quickLutPreviewAutoFallbackTriedRef = useRef(false);
   const currentTimeRef = useRef(0);
   const pendingStartRef = useRef<number | null>(null);
   const lastCurrentTimeCommitRef = useRef(0);
@@ -1019,6 +1103,13 @@ function App() {
     }
   }, []);
 
+  const clearQuickLutPreviewProgressTimer = useCallback(() => {
+    if (quickLutPreviewProgressHideTimerRef.current !== null) {
+      window.clearTimeout(quickLutPreviewProgressHideTimerRef.current);
+      quickLutPreviewProgressHideTimerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     isPreparingPreviewRef.current = isPreparingPreview;
   }, [isPreparingPreview]);
@@ -1029,11 +1120,14 @@ function App() {
         return;
       }
 
-      if (payload.jobId !== activePreviewJobIdRef.current) {
+      if (payload.jobId === activePreviewJobIdRef.current) {
+        setPreviewProgressPercent(Math.min(100, Math.max(0, payload.percent)));
         return;
       }
 
-      setPreviewProgressPercent(Math.min(100, Math.max(0, payload.percent)));
+      if (payload.jobId === quickLutPreviewJobIdRef.current) {
+        setQuickLutPreviewProgressPercent(Math.min(100, Math.max(0, payload.percent)));
+      }
     };
 
     window.ipcRenderer.on('preview-prepare-progress', handlePreviewProgress);
@@ -1329,6 +1423,13 @@ function App() {
     setCurrentTime(t);
   }, []);
 
+  const handleQuickLutPreviewSeek = useCallback((nextTime: number) => {
+    const maxDuration = Number.isFinite(quickLutPreviewDuration) ? Math.max(0, quickLutPreviewDuration) : 0;
+    const safeTime = Math.min(maxDuration, Math.max(0, Number.isFinite(nextTime) ? nextTime : 0));
+    quickLutPreviewPlayerRef.current?.seekTo(safeTime);
+    setQuickLutPreviewCurrentTime(safeTime);
+  }, [quickLutPreviewDuration]);
+
   const handlePlayPause = useCallback(() => {
     setIsPlaying(prev => !prev);
   }, []);
@@ -1481,6 +1582,355 @@ function App() {
       alert(t('quickSplitFailed') + errorMessage);
     }
   }, [clearExportProgressTimer, quickSplitSourcePath, quickSplitTargetSizeMb, t]);
+
+  const handleQuickLutBatchVideosChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = '';
+
+    if (selectedFiles.length === 0) {
+      return;
+    }
+
+    const validFiles = selectedFiles.filter((file) => isSupportedVideoFile(file));
+    if (validFiles.length === 0) {
+      alert(t('uploadVideoAlert'));
+      return;
+    }
+
+    let missingPathCount = 0;
+    setQuickLutBatchVideos((prev) => {
+      const existingPathSet = new Set(prev.map((item) => item.filePath));
+      const nextItems = [...prev];
+
+      for (const file of validFiles) {
+        const filePath = (file as File & { path?: string }).path ?? '';
+        if (!filePath) {
+          missingPathCount += 1;
+          continue;
+        }
+
+        if (existingPathSet.has(filePath)) {
+          continue;
+        }
+
+        existingPathSet.add(filePath);
+        nextItems.push({
+          id: uuidv4(),
+          filePath,
+          displayName: getFileNameFromPath(filePath),
+          sizeBytes: file.size
+        });
+      }
+
+      return nextItems;
+    });
+
+    if (missingPathCount > 0) {
+      alert(t('pathError'));
+    }
+  }, [t]);
+
+  const clearQuickLutBatchVideos = useCallback(() => {
+    setQuickLutBatchVideos([]);
+  }, []);
+
+  const removeQuickLutBatchVideo = useCallback((videoId: string) => {
+    setQuickLutBatchVideos((prev) => prev.filter((item) => item.id !== videoId));
+  }, []);
+
+  const handleQuickLutBatchImportLut = useCallback(async () => {
+    try {
+      const selectedLutPath = await window.ipcRenderer.showOpenLutDialog();
+      if (!selectedLutPath) {
+        return;
+      }
+
+      setQuickLutBatchLutPath(selectedLutPath);
+    } catch (error) {
+      console.error('Failed to import quick batch LUT file:', error);
+    }
+  }, []);
+
+  const runQuickLutBatchExport = useCallback(async () => {
+    try {
+      if (quickLutBatchVideos.length === 0) {
+        alert(t('quickLutBatchNeedVideos'));
+        return;
+      }
+
+      const normalizedLutPath = quickLutBatchLutPath.trim();
+      if (!normalizedLutPath) {
+        alert(t('quickLutBatchNeedLut'));
+        return;
+      }
+
+      const outputDir = await window.ipcRenderer.showOpenDialog();
+      if (!outputDir) return;
+
+      clearExportProgressTimer();
+      const jobId = `quick-lut-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      activeExportJobIdRef.current = jobId;
+      activeExportContextRef.current = null;
+      setExportMode('full');
+      setExportProgressPercent(0);
+      setExportProgressClip({ current: 0, total: quickLutBatchVideos.length });
+      setIsExporting(true);
+      let exportCompleted = false;
+
+      try {
+        const res = await window.ipcRenderer.processLutFullBatch({
+          videos: quickLutBatchVideos.map((video) => ({
+            id: video.id,
+            filePath: video.filePath
+          })),
+          outputDir,
+          lutPath: normalizedLutPath,
+          lutIntensity: clampLutIntensity(quickLutBatchLutIntensity),
+          jobId
+        });
+
+        const successCount = res.results.filter((result) => result.success).length;
+        exportCompleted = true;
+        if (!res.success || successCount === 0 || successCount !== res.results.length) {
+          if ('error' in res && typeof res.error === 'string' && res.error.length > 0) {
+            alert(t('quickLutBatchFailed') + res.error);
+          } else {
+            alert(t('exportFailed'));
+          }
+        } else {
+          alert(t('quickLutBatchSuccess', { count: successCount }));
+        }
+      } finally {
+        setIsExporting(false);
+        if (activeExportJobIdRef.current === jobId) {
+          activeExportJobIdRef.current = null;
+          activeExportContextRef.current = null;
+          if (exportCompleted) {
+            setExportProgressPercent(100);
+            clearExportProgressTimer();
+            exportProgressHideTimerRef.current = window.setTimeout(() => {
+              if (activeExportJobIdRef.current === null) {
+                setExportProgressPercent(null);
+                setExportProgressClip(null);
+              }
+              exportProgressHideTimerRef.current = null;
+            }, 400);
+          } else {
+            setExportProgressPercent(null);
+            setExportProgressClip(null);
+          }
+        }
+      }
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setIsExporting(false);
+      activeExportJobIdRef.current = null;
+      activeExportContextRef.current = null;
+      clearExportProgressTimer();
+      setExportProgressPercent(null);
+      setExportProgressClip(null);
+      console.error('Quick LUT batch export error:', error);
+      alert(t('quickLutBatchFailed') + errorMessage);
+    }
+  }, [clearExportProgressTimer, quickLutBatchLutIntensity, quickLutBatchLutPath, quickLutBatchVideos, t]);
+
+  useEffect(() => {
+    if (quickLutBatchVideos.length === 0) {
+      setQuickLutPreviewVideoId(null);
+      setShowQuickLutPreviewVideoList(false);
+      return;
+    }
+
+    if (!quickLutPreviewVideoId || !quickLutBatchVideos.some((video) => video.id === quickLutPreviewVideoId)) {
+      setQuickLutPreviewVideoId(quickLutBatchVideos[0].id);
+    }
+  }, [quickLutBatchVideos, quickLutPreviewVideoId]);
+
+  const switchQuickLutPreviewVideo = useCallback((videoId: string) => {
+    setQuickLutPreviewVideoId(videoId);
+    setShowQuickLutPreviewVideoList(false);
+    setQuickLutPreviewPlaying(false);
+  }, []);
+
+  const switchToQuickLutProxyPreview = useCallback(async () => {
+    if (!quickLutPreviewFilePath || quickLutPreviewPreparingRef.current || !quickLutRealtimePreviewEnabled) {
+      return;
+    }
+
+    clearQuickLutPreviewProgressTimer();
+    const jobId = `quick-preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    quickLutPreviewJobIdRef.current = jobId;
+    setQuickLutPreviewProgressPercent(0);
+    quickLutPreviewPreparingRef.current = true;
+    setQuickLutPreviewPreparing(true);
+    let conversionCompleted = false;
+
+    try {
+      const result = await window.ipcRenderer.preparePreview({
+        filePath: quickLutPreviewFilePath,
+        forceProxy: true,
+        jobId
+      });
+
+      if (!result.success) {
+        console.warn('Quick LUT preview compatible conversion failed:', result.error);
+        return;
+      }
+
+      if (quickLutPreviewJobIdRef.current !== jobId) {
+        return;
+      }
+
+      if (result.useProxy && result.url && result.path) {
+        if (quickLutPreviewProxyPathRef.current) {
+          const stalePreviewPath = quickLutPreviewProxyPathRef.current;
+          quickLutPreviewProxyPathRef.current = null;
+          void cleanupPreviewProxy(stalePreviewPath);
+        }
+
+        quickLutPreviewProxyPathRef.current = result.path;
+        setQuickLutPreviewSrc(result.url);
+        setQuickLutPreviewUsingCompatible(true);
+        conversionCompleted = true;
+      }
+    } catch (error) {
+      console.warn('Quick LUT preview compatible conversion failed:', error);
+    } finally {
+      quickLutPreviewPreparingRef.current = false;
+      setQuickLutPreviewPreparing(false);
+
+      if (quickLutPreviewJobIdRef.current === jobId) {
+        if (!conversionCompleted) {
+          quickLutPreviewJobIdRef.current = null;
+          setQuickLutPreviewProgressPercent(null);
+        } else {
+          setQuickLutPreviewProgressPercent(100);
+          clearQuickLutPreviewProgressTimer();
+          quickLutPreviewProgressHideTimerRef.current = window.setTimeout(() => {
+            if (quickLutPreviewJobIdRef.current === jobId) {
+              quickLutPreviewJobIdRef.current = null;
+              setQuickLutPreviewProgressPercent(null);
+            }
+            quickLutPreviewProgressHideTimerRef.current = null;
+          }, 350);
+        }
+      }
+    }
+  }, [cleanupPreviewProxy, clearQuickLutPreviewProgressTimer, quickLutPreviewFilePath, quickLutRealtimePreviewEnabled]);
+
+  const switchToQuickLutCompatiblePreview = useCallback(() => {
+    if (!quickLutPreviewFilePath || quickLutPreviewPreparingRef.current || quickLutPreviewUsingCompatible || !quickLutRealtimePreviewEnabled) {
+      return;
+    }
+
+    void switchToQuickLutProxyPreview();
+  }, [quickLutPreviewFilePath, quickLutPreviewUsingCompatible, quickLutRealtimePreviewEnabled, switchToQuickLutProxyPreview]);
+
+  const handleQuickLutPreviewDecodeIssue = useCallback((issue: { type: 'decode-error' | 'src-not-supported'; code?: number }) => {
+    if (quickLutPreviewUsingCompatible || quickLutPreviewPreparing || !quickLutPreviewFilePath || !quickLutRealtimePreviewEnabled) {
+      return;
+    }
+
+    if (quickLutPreviewAutoFallbackTriedRef.current) {
+      return;
+    }
+    quickLutPreviewAutoFallbackTriedRef.current = true;
+
+    console.warn('Quick LUT preview decode issue detected, switching to compatible preview...', issue);
+    switchToQuickLutCompatiblePreview();
+  }, [quickLutPreviewFilePath, quickLutPreviewPreparing, quickLutPreviewUsingCompatible, quickLutRealtimePreviewEnabled, switchToQuickLutCompatiblePreview]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const quickLutPanelOpen = activeQuickAction === 'lut-full-batch';
+    const selectedPreviewVideo = quickLutPreviewVideoId
+      ? quickLutBatchVideos.find((video) => video.id === quickLutPreviewVideoId) ?? null
+      : null;
+
+    clearQuickLutPreviewProgressTimer();
+    quickLutPreviewJobIdRef.current = null;
+    quickLutPreviewPreparingRef.current = false;
+    setQuickLutPreviewPreparing(false);
+    setQuickLutPreviewProgressPercent(null);
+
+    if (quickLutPreviewProxyPathRef.current) {
+      const stalePreviewPath = quickLutPreviewProxyPathRef.current;
+      quickLutPreviewProxyPathRef.current = null;
+      void cleanupPreviewProxy(stalePreviewPath);
+    }
+
+    setQuickLutPreviewPlaying(false);
+    setQuickLutPreviewCurrentTime(0);
+    setQuickLutPreviewDuration(0);
+    setQuickLutPreviewUsingCompatible(false);
+    setQuickLutPreviewCompatibleSuggested(false);
+    quickLutPreviewAutoFallbackTriedRef.current = false;
+
+    if (!selectedPreviewVideo) {
+      setQuickLutPreviewFilePath('');
+      setQuickLutPreviewSrc('');
+      return;
+    }
+
+    setQuickLutPreviewFilePath(selectedPreviewVideo.filePath);
+    if (!quickLutPanelOpen || !quickLutRealtimePreviewEnabled) {
+      setQuickLutPreviewSrc('');
+      return;
+    }
+
+    setQuickLutPreviewSrc(toFileUrl(selectedPreviewVideo.filePath));
+    window.ipcRenderer.preparePreview({
+      filePath: selectedPreviewVideo.filePath,
+      forceProxy: false
+    })
+      .then((result) => {
+        if (cancelled) return;
+
+        if (!result.success) {
+          console.warn('Quick LUT preview preparation failed:', result.error);
+          return;
+        }
+
+        setQuickLutPreviewCompatibleSuggested(Boolean(result.suggestCompatibleMode));
+        if (result.useProxy && result.url && result.path) {
+          quickLutPreviewProxyPathRef.current = result.path;
+          setQuickLutPreviewSrc(result.url);
+          setQuickLutPreviewUsingCompatible(true);
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.warn('Quick LUT preview preparation failed:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeQuickAction,
+    cleanupPreviewProxy,
+    clearQuickLutPreviewProgressTimer,
+    quickLutBatchVideos,
+    quickLutPreviewVideoId,
+    quickLutRealtimePreviewEnabled
+  ]);
+
+  useEffect(() => {
+    if (activeQuickAction !== 'lut-full-batch') {
+      setShowQuickLutPreviewVideoList(false);
+    }
+  }, [activeQuickAction]);
+
+  useEffect(() => {
+    return () => {
+      clearQuickLutPreviewProgressTimer();
+      quickLutPreviewJobIdRef.current = null;
+      quickLutPreviewPreparingRef.current = false;
+      const stalePreviewPath = quickLutPreviewProxyPathRef.current;
+      quickLutPreviewProxyPathRef.current = null;
+      void cleanupPreviewProxy(stalePreviewPath);
+    };
+  }, [cleanupPreviewProxy, clearQuickLutPreviewProgressTimer]);
 
   const handleImportLut = useCallback(async () => {
     try {
@@ -1702,7 +2152,18 @@ function App() {
   const quickSplitSourceSizeLabel = quickSplitSourceSizeBytes !== null
     ? formatFileSize(quickSplitSourceSizeBytes)
     : '--';
+  const quickLutBatchVideoCountLabel = t('quickLutBatchVideoCount', { count: quickLutBatchVideos.length });
+  const quickLutBatchTotalSizeBytes = quickLutBatchVideos.reduce((sum, item) => sum + item.sizeBytes, 0);
+  const quickLutBatchTotalSizeLabel = formatFileSize(quickLutBatchTotalSizeBytes);
+  const quickLutBatchLutFileName = quickLutBatchLutPath ? getFileNameFromPath(quickLutBatchLutPath) : t('lutNotSelected');
+  const quickLutPreviewActiveVideo = quickLutPreviewVideoId
+    ? quickLutBatchVideos.find((video) => video.id === quickLutPreviewVideoId) ?? null
+    : null;
+  const quickLutPreviewExternalLoadingText = quickLutPreviewPreparing
+    ? `${t('preparingPreview')} ${Math.round(quickLutPreviewProgressPercent ?? 0)}%`
+    : null;
   const isQuickSplitPanelOpen = activeQuickAction === 'split-by-size';
+  const isQuickLutBatchPanelOpen = activeQuickAction === 'lut-full-batch';
   const exportProgressLabel = exportMode === 'full'
     ? t('exportingVideos')
     : exportMode === 'split'
@@ -1989,6 +2450,62 @@ function App() {
         </div>
       )}
 
+      {showQuickLutPreviewVideoList && isQuickLutBatchPanelOpen && (
+        <div className="fixed inset-0 z-[105] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowQuickLutPreviewVideoList(false)} />
+          <div className="relative w-full max-w-lg bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-white/5 flex items-center justify-between">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <List className="w-5 h-5 text-emerald-400" />
+                {t('quickLutPreviewListTitle')}
+              </h3>
+              <Button variant="ghost" className="h-8 w-8 p-0" onClick={() => setShowQuickLutPreviewVideoList(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+
+            <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2 custom-scrollbar">
+              {quickLutBatchVideos.length === 0 ? (
+                <div className="text-center text-zinc-500 py-8 text-sm">
+                  {t('quickLutBatchNoVideos')}
+                </div>
+              ) : (
+                quickLutBatchVideos.map((videoItem) => {
+                  const isActive = videoItem.id === quickLutPreviewVideoId;
+                  return (
+                    <div
+                      key={videoItem.id}
+                      className={cn(
+                        'rounded-lg border p-3 flex items-center justify-between gap-3 transition-colors',
+                        isActive ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-white/10 bg-zinc-950/40'
+                      )}
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm text-zinc-200 truncate" title={videoItem.displayName}>{videoItem.displayName}</p>
+                        <p className="text-[11px] text-zinc-500 mt-1 font-mono">{formatFileSize(videoItem.sizeBytes)}</p>
+                      </div>
+                      {isActive ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          {t('currentVideo')}
+                        </span>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() => switchQuickLutPreviewVideo(videoItem.id)}
+                        >
+                          {t('switchVideo')}
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showLutFullExportConfirm && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowLutFullExportConfirm(false)} />
@@ -2076,29 +2593,125 @@ function App() {
           <div className="flex-1 m-6 rounded-3xl border border-white/10 bg-zinc-900/20 p-4 sm:p-5 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-4 min-h-0">
             <div
               className={cn(
-                "flex flex-col items-center justify-center border-2 border-dashed rounded-2xl transition-all duration-300 gap-6 bg-zinc-900/30 min-h-[360px]",
-                dragActive ? "border-blue-500/90 bg-blue-500/10" : "border-zinc-700 hover:border-zinc-600"
+                "relative flex flex-col items-center justify-center border-2 border-dashed rounded-2xl transition-all duration-300 gap-6 bg-zinc-900/30 min-h-[360px] overflow-hidden",
+                dragActive ? "border-blue-500/90 bg-blue-500/10" : "border-zinc-700 hover:border-zinc-600",
+                isQuickLutBatchPanelOpen && "border-emerald-500/40"
               )}
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
               onDragOver={handleDrag}
               onDrop={handleDrop}
             >
-              <div className="flex flex-col items-center text-center space-y-4">
+              <div
+                className={cn(
+                  "flex flex-col items-center text-center space-y-4 transition-opacity duration-200",
+                  isQuickLutBatchPanelOpen && "opacity-15 pointer-events-none select-none"
+                )}
+              >
                 <Upload className="w-12 h-12 mx-auto text-zinc-600" />
                 <h2 className="text-2xl font-semibold text-white">{t('dropVideo')}</h2>
                 <input type="file" className="hidden" id="file-upload" multiple accept={VIDEO_FILE_ACCEPT} onChange={handleChange} />
                 <Button onClick={() => document.getElementById('file-upload')?.click()}>{t('selectVideo')}</Button>
               </div>
+
+              {isQuickLutBatchPanelOpen && (
+                <div className="absolute inset-0 z-10 rounded-2xl border border-emerald-500/30 bg-zinc-950/92 p-3 sm:p-4 flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-zinc-100">{t('quickLutPreviewTitle')}</p>
+                      <p
+                        className="text-[11px] text-zinc-500 truncate mt-0.5"
+                        title={quickLutPreviewActiveVideo ? quickLutPreviewActiveVideo.displayName : ''}
+                      >
+                        {quickLutPreviewActiveVideo ? quickLutPreviewActiveVideo.displayName : t('quickLutPreviewNoVideo')}
+                      </p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      className="h-8 px-3 text-xs shrink-0"
+                      onClick={() => setShowQuickLutPreviewVideoList(true)}
+                      disabled={quickLutBatchVideos.length === 0}
+                    >
+                      <List className="w-3.5 h-3.5" />
+                      {t('quickLutPreviewVideoList')}
+                    </Button>
+                  </div>
+
+                  <div className="flex-1 min-h-0 rounded-xl border border-white/10 bg-black/70 overflow-hidden relative">
+                    {quickLutRealtimePreviewEnabled ? (
+                      quickLutPreviewSrc ? (
+                        <VideoPlayer
+                          ref={quickLutPreviewPlayerRef}
+                          src={quickLutPreviewSrc}
+                          isPlaying={quickLutPreviewPlaying}
+                          onPlayPause={() => setQuickLutPreviewPlaying((prev) => !prev)}
+                          onTimeUpdate={(time) => setQuickLutPreviewCurrentTime(time)}
+                          onDurationChange={(nextDuration) => setQuickLutPreviewDuration(nextDuration)}
+                          onEnded={() => setQuickLutPreviewPlaying(false)}
+                          onDecodeIssue={handleQuickLutPreviewDecodeIssue}
+                          externalLoadingText={quickLutPreviewExternalLoadingText}
+                          lutEnabled={quickLutRealtimePreviewEnabled && Boolean(quickLutBatchLutPath)}
+                          lutPath={quickLutRealtimePreviewEnabled && quickLutBatchLutPath ? quickLutBatchLutPath : null}
+                          lutIntensity={clampLutIntensity(quickLutBatchLutIntensity)}
+                        />
+                      ) : (
+                        <div className="h-full w-full flex items-center justify-center text-center px-4">
+                          <p className="text-sm text-zinc-500">{t('quickLutPreviewNoVideo')}</p>
+                        </div>
+                      )
+                    ) : (
+                      <div className="h-full w-full flex items-center justify-center text-center px-4">
+                        <p className="text-sm text-zinc-500">{t('quickLutPreviewOff')}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(quickLutPreviewDuration, 0)}
+                    step={0.01}
+                    value={Math.min(quickLutPreviewCurrentTime, Math.max(quickLutPreviewDuration, 0))}
+                    onChange={(event) => handleQuickLutPreviewSeek(Number(event.target.value))}
+                    disabled={!quickLutRealtimePreviewEnabled || !quickLutPreviewSrc || quickLutPreviewDuration <= 0}
+                    className="w-full accent-emerald-400 disabled:opacity-40"
+                    aria-label="Quick LUT preview progress"
+                  />
+
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <div className="flex items-center gap-2 text-zinc-400 font-mono">
+                      <span>{formatTime(quickLutPreviewCurrentTime)}</span>
+                      <span>/</span>
+                      <span>{formatTime(quickLutPreviewDuration)}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!quickLutPreviewUsingCompatible && quickLutPreviewCompatibleSuggested && quickLutRealtimePreviewEnabled && (
+                        <Button
+                          variant="ghost"
+                          className="h-6 px-2 text-[11px] text-amber-400 hover:text-amber-300"
+                          onClick={switchToQuickLutCompatiblePreview}
+                          disabled={quickLutPreviewPreparing}
+                        >
+                          {t('quickLutPreviewUseCompatible')}
+                        </Button>
+                      )}
+                      {quickLutPreviewUsingCompatible && (
+                        <span className="text-amber-400">{t('quickLutPreviewCompatibleMode')}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-zinc-900/55 p-4 sm:p-5 flex flex-col min-h-[360px]">
+            <div className="rounded-2xl border border-white/10 bg-zinc-900/55 p-4 sm:p-5 flex flex-col min-h-[360px] max-h-full overflow-hidden">
               <div className="pb-3 border-b border-white/10 space-y-1.5">
                 <p className="text-lg font-semibold text-zinc-100">{t('quickActions')}</p>
                 <p className="text-xs text-zinc-400 leading-relaxed">{t('quickActionsDesc')}</p>
               </div>
 
-              <div className="mt-4">
+              <div className="mt-4 flex-1 min-h-0 overflow-y-auto pr-1 custom-scrollbar">
+                <div>
                 <button
                   type="button"
                   onClick={() => {
@@ -2222,6 +2835,214 @@ function App() {
                     </div>
                   </div>
                 </div>
+              </div>
+
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveQuickAction((prev) => prev === 'lut-full-batch' ? null : 'lut-full-batch');
+                  }}
+                  className={cn(
+                    "group w-full rounded-xl border px-3 py-3 flex items-center gap-3 text-left transition-all",
+                    isQuickLutBatchPanelOpen
+                      ? "border-emerald-400/50 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(16,185,129,0.16)]"
+                      : "border-white/10 bg-zinc-950/45 hover:border-emerald-500/40 hover:bg-emerald-500/5"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "h-6 min-w-6 px-1 rounded-md flex items-center justify-center text-xs font-semibold font-mono",
+                      isQuickLutBatchPanelOpen ? "bg-emerald-300 text-zinc-900" : "bg-zinc-800 text-zinc-300"
+                    )}
+                  >
+                    2
+                  </span>
+                  <span className="flex-1 text-sm font-medium text-zinc-100">
+                    {t('quickLutBatchButtonLabel')}
+                  </span>
+                  {isQuickLutBatchPanelOpen ? (
+                    <ChevronDown className="w-4 h-4 text-emerald-300" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-emerald-300 transition-colors" />
+                  )}
+                </button>
+              </div>
+
+              <div
+                className={cn(
+                  "grid transition-all duration-300 ease-out",
+                  isQuickLutBatchPanelOpen ? "grid-rows-[1fr] opacity-100 mt-3" : "grid-rows-[0fr] opacity-0 mt-0 pointer-events-none"
+                )}
+              >
+                <div className="overflow-hidden">
+                  <div className="rounded-xl border border-emerald-500/20 bg-zinc-950/65 p-4 space-y-4">
+                    <p className="text-xs text-zinc-400 leading-relaxed">{t('quickLutBatchDesc')}</p>
+
+                    <div className="rounded-lg border border-white/10 bg-zinc-900/60 px-3 py-2.5 flex items-center justify-between gap-3">
+                      <div className="space-y-1 min-w-0">
+                        <p className="text-xs font-medium text-zinc-100">{t('quickLutPreviewRealtime')}</p>
+                        <p className="text-[11px] text-zinc-500 leading-relaxed">{t('quickLutPreviewRealtimeDesc')}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setQuickLutRealtimePreviewEnabled((prev) => !prev)}
+                        className={cn(
+                          "w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none shrink-0",
+                          quickLutRealtimePreviewEnabled ? "bg-emerald-500" : "bg-zinc-700"
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            "w-4 h-4 rounded-full bg-white transition-transform duration-200 mx-1",
+                            quickLutRealtimePreviewEnabled ? "translate-x-5" : "translate-x-0"
+                          )}
+                        />
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5 flex items-center justify-between">
+                        <span className="text-[11px] text-zinc-400">{t('quickLutBatchVideosLabel')}</span>
+                        <span className="text-[11px] font-mono text-zinc-200">{quickLutBatchVideoCountLabel}</span>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5 flex items-center justify-between">
+                        <span className="text-[11px] text-zinc-400">{t('quickLutBatchTotalSize')}</span>
+                        <span className="text-[11px] font-mono text-zinc-200">{quickLutBatchTotalSizeLabel}</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <input
+                        type="file"
+                        className="hidden"
+                        id="quick-lut-batch-videos-upload"
+                        multiple
+                        accept={VIDEO_FILE_ACCEPT}
+                        onChange={handleQuickLutBatchVideosChange}
+                      />
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          className="h-9 px-3 text-xs"
+                          onClick={() => document.getElementById('quick-lut-batch-videos-upload')?.click()}
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          {t('quickLutBatchSelectVideos')}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          className="h-9 px-3 text-xs text-zinc-500 hover:text-red-400"
+                          onClick={clearQuickLutBatchVideos}
+                          disabled={quickLutBatchVideos.length === 0}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          {t('quickLutBatchClearVideos')}
+                        </Button>
+                      </div>
+
+                      {quickLutBatchVideos.length === 0 ? (
+                        <p className="text-[11px] text-zinc-500">{t('quickLutBatchNoVideos')}</p>
+                      ) : (
+                        <div className="max-h-24 overflow-y-auto pr-1 space-y-1.5 custom-scrollbar">
+                          {quickLutBatchVideos.map((videoItem) => (
+                            <div
+                              key={videoItem.id}
+                              className="rounded-md border border-white/10 bg-zinc-900/70 px-2 py-1.5 flex items-center justify-between gap-2"
+                            >
+                              <span className="text-[11px] text-zinc-200 truncate" title={videoItem.displayName}>
+                                {videoItem.displayName}
+                              </span>
+                              <button
+                                type="button"
+                                className="text-zinc-500 hover:text-red-400 transition-colors"
+                                onClick={() => removeQuickLutBatchVideo(videoItem.id)}
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs font-medium text-zinc-200">{t('quickLutBatchLutFile')}</label>
+                        <span className={cn(
+                          "max-w-[60%] truncate text-[11px] font-mono text-right",
+                          quickLutBatchLutPath ? "text-zinc-300" : "text-zinc-500"
+                        )} title={quickLutBatchLutFileName}>
+                          {quickLutBatchLutFileName}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          className="h-8 px-3 text-xs"
+                          onClick={() => {
+                            void handleQuickLutBatchImportLut();
+                          }}
+                        >
+                          {t('quickLutBatchSelectLut')}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          className="h-8 px-2 text-xs text-zinc-500 hover:text-red-400"
+                          onClick={() => setQuickLutBatchLutPath('')}
+                          disabled={!quickLutBatchLutPath}
+                        >
+                          {t('quickLutBatchClearLut')}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-zinc-200">{t('quickLutBatchIntensity')}</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={quickLutBatchLutIntensity}
+                          onChange={(event) => setQuickLutBatchLutIntensity(clampLutIntensity(Number(event.target.value)))}
+                          className="flex-1 accent-emerald-400"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={quickLutBatchLutIntensity}
+                          onChange={(event) => setQuickLutBatchLutIntensity(clampLutIntensity(Number(event.target.value)))}
+                          className="w-16 bg-zinc-800 border border-white/10 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 font-mono"
+                        />
+                        <span className="text-[11px] text-zinc-400">%</span>
+                      </div>
+                      <p className="text-[11px] text-zinc-500">{t('quickLutBatchAccelHint')}</p>
+                    </div>
+
+                    <Button
+                      className="w-full h-9 text-sm"
+                      disabled={isExporting || quickLutBatchVideos.length === 0 || !quickLutBatchLutPath}
+                      onClick={() => {
+                        void runQuickLutBatchExport();
+                      }}
+                    >
+                      <Download className="w-4 h-4" />
+                      {isExporting && exportMode === 'full'
+                        ? `${t('exportingVideos')} ${Math.round(exportProgressPercent ?? 0)}%`
+                        : t('quickLutBatchRun')}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {!isQuickSplitPanelOpen && !isQuickLutBatchPanelOpen && (
+                <p className="mt-3 text-[11px] text-zinc-500">{t('quickActionSelect')}</p>
+              )}
+
               </div>
             </div>
           </div>
