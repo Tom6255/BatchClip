@@ -30,7 +30,7 @@ interface QuickSplitBySizeFeatureProps {
   onSourceChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onRun: () => void;
   isExporting: boolean;
-  exportMode: 'clips' | 'full' | 'split';
+  exportMode: 'clips' | 'full' | 'split' | 'convert';
   exportProgressPercent: number | null;
 }
 

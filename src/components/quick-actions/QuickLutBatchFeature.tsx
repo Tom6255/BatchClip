@@ -53,7 +53,7 @@ interface QuickLutBatchFeatureProps {
   onChangeLutIntensity: (value: number) => void;
   onRun: () => void;
   isExporting: boolean;
-  exportMode: 'clips' | 'full' | 'split';
+  exportMode: 'clips' | 'full' | 'split' | 'convert';
   exportProgressPercent: number | null;
 }
 

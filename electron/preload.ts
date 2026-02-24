@@ -44,6 +44,17 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     jobId?: string
   }) => ipcRenderer.invoke('process-size-split', opts),
 
+  processConvertBatch: (opts: {
+    videos: { id: string; filePath: string }[],
+    outputDir: string,
+    format: 'mp4' | 'mkv' | 'webm' | 'mov',
+    videoCodec: 'h264' | 'hevc' | 'vp9' | 'av1',
+    audioCodec: 'aac' | 'opus' | 'copy',
+    crf: number,
+    performanceMode?: 'auto' | 'cpu',
+    jobId?: string
+  }) => ipcRenderer.invoke('process-convert-batch', opts),
+
   preparePreview: (opts: {
     filePath: string,
     forceProxy?: boolean,

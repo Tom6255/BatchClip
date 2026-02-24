@@ -66,6 +66,34 @@ interface Window {
       }>;
     }>;
 
+    processConvertBatch: (opts: {
+      videos: { id: string; filePath: string }[];
+      outputDir: string;
+      format: 'mp4' | 'mkv' | 'webm' | 'mov';
+      videoCodec: 'h264' | 'hevc' | 'vp9' | 'av1';
+      audioCodec: 'aac' | 'opus' | 'copy';
+      crf: number;
+      performanceMode?: 'auto' | 'cpu';
+      jobId?: string;
+    }) => Promise<{
+      success: boolean;
+      error?: string;
+      warnings?: string[];
+      settings?: {
+        format: 'mp4' | 'mkv' | 'webm' | 'mov';
+        videoCodec: 'h264' | 'hevc' | 'vp9' | 'av1';
+        audioCodec: 'aac' | 'opus' | 'copy';
+        crf: number;
+        performanceMode: 'auto' | 'cpu';
+      };
+      results: Array<{
+        id: string;
+        success: boolean;
+        path?: string;
+        error?: string;
+      }>;
+    }>;
+
     preparePreview: (opts: {
       filePath: string;
       forceProxy?: boolean;

@@ -4,9 +4,10 @@ import { cn } from '../../../lib/utils';
 import Button from '../../../components/ui/Button';
 import QuickSplitBySizeFeature from '../../../components/quick-actions/QuickSplitBySizeFeature';
 import QuickLutBatchFeature, { QuickLutPreviewOverlay } from '../../../components/quick-actions/QuickLutBatchFeature';
+import QuickConvertBatchFeature from '../../../components/quick-actions/QuickConvertBatchFeature';
 import type { VideoPlayerRef } from '../../../components/VideoPlayer';
 import type { TranslationKey } from '../../../i18n/translations';
-import type { QuickLutBatchVideoItem } from '../../quick-actions/types';
+import type { QuickConvertBatchSettings, QuickConvertBatchVideoItem, QuickConvertCustomTemplate, QuickLutBatchVideoItem } from '../../quick-actions/types';
 
 interface MainLandingWorkspaceProps {
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
@@ -70,8 +71,41 @@ interface MainLandingWorkspaceProps {
   quickLutBatchLutIntensity: number;
   onChangeQuickLutBatchLutIntensity: (value: number) => void;
   onRunQuickLutBatchExport: () => void;
+  isQuickConvertPanelOpen: boolean;
+  onToggleQuickConvertPanel: () => void;
+  quickConvertVideoCountLabel: string;
+  quickConvertTotalSizeLabel: string;
+  quickConvertBatchVideos: QuickConvertBatchVideoItem[];
+  quickConvertCustomTemplates: QuickConvertCustomTemplate[];
+  onQuickConvertBatchVideosChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onClearQuickConvertBatchVideos: () => void;
+  onRemoveQuickConvertBatchVideo: (videoId: string) => void;
+  quickConvertSettings: QuickConvertBatchSettings;
+  activeQuickConvertTemplateId: string | null;
+  canSaveQuickConvertTemplate: boolean;
+  onApplyQuickConvertTemplateById: (templateId: string) => void;
+  showQuickConvertTemplateSaveModal: boolean;
+  quickConvertTemplateModalMode: 'create' | 'rename';
+  quickConvertTemplateDraftTitle: string;
+  quickConvertTemplateDraftDescription: string;
+  onOpenQuickConvertTemplateSaveModal: () => void;
+  onOpenQuickConvertTemplateRenameModal: (templateId: string) => void;
+  onDeleteQuickConvertTemplate: (templateId: string) => void;
+  onCloseQuickConvertTemplateSaveModal: () => void;
+  onChangeQuickConvertTemplateDraftTitle: (value: string) => void;
+  onChangeQuickConvertTemplateDraftDescription: (value: string) => void;
+  onConfirmQuickConvertTemplateSave: (draft?: { title: string; description: string }) => void;
+  onChangeQuickConvertFormat: (value: string) => void;
+  onChangeQuickConvertVideoCodec: (value: string) => void;
+  onChangeQuickConvertAudioCodec: (value: string) => void;
+  onChangeQuickConvertCrf: (value: number) => void;
+  onChangeQuickConvertPerformanceMode: (value: string) => void;
+  showQuickConvertCodecGuide: boolean;
+  onOpenQuickConvertCodecGuide: () => void;
+  onCloseQuickConvertCodecGuide: () => void;
+  onRunQuickConvertBatchExport: () => void;
   isExporting: boolean;
-  exportMode: 'clips' | 'full' | 'split';
+  exportMode: 'clips' | 'full' | 'split' | 'convert';
   exportProgressPercent: number | null;
 }
 
@@ -139,6 +173,39 @@ const MainLandingWorkspace = ({
   quickLutBatchLutIntensity,
   onChangeQuickLutBatchLutIntensity,
   onRunQuickLutBatchExport,
+  isQuickConvertPanelOpen,
+  onToggleQuickConvertPanel,
+  quickConvertVideoCountLabel,
+  quickConvertTotalSizeLabel,
+  quickConvertBatchVideos,
+  quickConvertCustomTemplates,
+  onQuickConvertBatchVideosChange,
+  onClearQuickConvertBatchVideos,
+  onRemoveQuickConvertBatchVideo,
+  quickConvertSettings,
+  activeQuickConvertTemplateId,
+  canSaveQuickConvertTemplate,
+  onApplyQuickConvertTemplateById,
+  showQuickConvertTemplateSaveModal,
+  quickConvertTemplateModalMode,
+  quickConvertTemplateDraftTitle,
+  quickConvertTemplateDraftDescription,
+  onOpenQuickConvertTemplateSaveModal,
+  onOpenQuickConvertTemplateRenameModal,
+  onDeleteQuickConvertTemplate,
+  onCloseQuickConvertTemplateSaveModal,
+  onChangeQuickConvertTemplateDraftTitle,
+  onChangeQuickConvertTemplateDraftDescription,
+  onConfirmQuickConvertTemplateSave,
+  onChangeQuickConvertFormat,
+  onChangeQuickConvertVideoCodec,
+  onChangeQuickConvertAudioCodec,
+  onChangeQuickConvertCrf,
+  onChangeQuickConvertPerformanceMode,
+  showQuickConvertCodecGuide,
+  onOpenQuickConvertCodecGuide,
+  onCloseQuickConvertCodecGuide,
+  onRunQuickConvertBatchExport,
   isExporting,
   exportMode,
   exportProgressPercent
@@ -246,6 +313,47 @@ const MainLandingWorkspace = ({
             quickLutBatchLutIntensity={quickLutBatchLutIntensity}
             onChangeLutIntensity={onChangeQuickLutBatchLutIntensity}
             onRun={onRunQuickLutBatchExport}
+            isExporting={isExporting}
+            exportMode={exportMode}
+            exportProgressPercent={exportProgressPercent}
+          />
+
+          <QuickConvertBatchFeature
+            isOpen={isQuickConvertPanelOpen}
+            onToggle={onToggleQuickConvertPanel}
+            t={t}
+            quickConvertBatchVideos={quickConvertBatchVideos}
+            quickConvertVideoCountLabel={quickConvertVideoCountLabel}
+            quickConvertTotalSizeLabel={quickConvertTotalSizeLabel}
+            quickConvertCustomTemplates={quickConvertCustomTemplates}
+            videoFileAccept={videoFileAccept}
+            onVideosChange={onQuickConvertBatchVideosChange}
+            onClearVideos={onClearQuickConvertBatchVideos}
+            onRemoveVideo={onRemoveQuickConvertBatchVideo}
+            quickConvertSettings={quickConvertSettings}
+            activeQuickConvertTemplateId={activeQuickConvertTemplateId}
+            canSaveQuickConvertTemplate={canSaveQuickConvertTemplate}
+            onApplyTemplateById={onApplyQuickConvertTemplateById}
+            showTemplateSaveModal={showQuickConvertTemplateSaveModal}
+            templateModalMode={quickConvertTemplateModalMode}
+            templateDraftTitle={quickConvertTemplateDraftTitle}
+            templateDraftDescription={quickConvertTemplateDraftDescription}
+            onOpenTemplateSaveModal={onOpenQuickConvertTemplateSaveModal}
+            onOpenTemplateRenameModal={onOpenQuickConvertTemplateRenameModal}
+            onDeleteTemplate={onDeleteQuickConvertTemplate}
+            onCloseTemplateSaveModal={onCloseQuickConvertTemplateSaveModal}
+            onChangeTemplateDraftTitle={onChangeQuickConvertTemplateDraftTitle}
+            onChangeTemplateDraftDescription={onChangeQuickConvertTemplateDraftDescription}
+            onConfirmTemplateSave={onConfirmQuickConvertTemplateSave}
+            onChangeFormat={onChangeQuickConvertFormat}
+            onChangeVideoCodec={onChangeQuickConvertVideoCodec}
+            onChangeAudioCodec={onChangeQuickConvertAudioCodec}
+            onChangeCrf={onChangeQuickConvertCrf}
+            onChangePerformanceMode={onChangeQuickConvertPerformanceMode}
+            showGuide={showQuickConvertCodecGuide}
+            onOpenGuide={onOpenQuickConvertCodecGuide}
+            onCloseGuide={onCloseQuickConvertCodecGuide}
+            onRun={onRunQuickConvertBatchExport}
             isExporting={isExporting}
             exportMode={exportMode}
             exportProgressPercent={exportProgressPercent}

@@ -5,6 +5,7 @@ import { VIDEO_FILE_ACCEPT, getFileNameFromPath, isSupportedVideoFile, toFileUrl
 import type { ExportProgressController } from './features/quick-actions/types';
 import { useQuickSplitBySize } from './features/quick-actions/hooks/useQuickSplitBySize';
 import { useQuickLutBatch } from './features/quick-actions/hooks/useQuickLutBatch';
+import { useQuickConvertBatch } from './features/quick-actions/hooks/useQuickConvertBatch';
 import AppHeader from './features/main/components/AppHeader';
 import { useMainSettings } from './features/main/hooks/useMainSettings';
 import SettingsModal from './features/main/components/SettingsModal';
@@ -141,9 +142,10 @@ function App() {
   const [showLutFullExportConfirm, setShowLutFullExportConfirm] = useState(false);
   const [tagLibrary, setTagLibrary] = useState<string[]>(parseStoredTagLibrary);
   const [newTagDraft, setNewTagDraft] = useState('');
-  const [activeQuickAction, setActiveQuickAction] = useState<'split-by-size' | 'lut-full-batch' | null>(null);
+  const [activeQuickAction, setActiveQuickAction] = useState<'split-by-size' | 'lut-full-batch' | 'convert-batch' | null>(null);
   const isQuickSplitPanelOpen = activeQuickAction === 'split-by-size';
   const isQuickLutBatchPanelOpen = activeQuickAction === 'lut-full-batch';
+  const isQuickConvertPanelOpen = activeQuickAction === 'convert-batch';
 
   const {
     useFixedDuration,
@@ -205,7 +207,7 @@ function App() {
   const [isPreparingPreview, setIsPreparingPreview] = useState(false);
   const [previewProgressPercent, setPreviewProgressPercent] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
-  const [exportMode, setExportMode] = useState<'clips' | 'full' | 'split'>('clips');
+  const [exportMode, setExportMode] = useState<'clips' | 'full' | 'split' | 'convert'>('clips');
   const [exportProgressPercent, setExportProgressPercent] = useState<number | null>(null);
   const [exportProgressClip, setExportProgressClip] = useState<{ current: number; total: number } | null>(null);
   const [usingCompatiblePreview, setUsingCompatiblePreview] = useState(false);
@@ -681,6 +683,46 @@ function App() {
     clampLutIntensity,
     defaultLutIntensity: DEFAULT_LUT_INTENSITY
   });
+
+  const {
+    quickConvertBatchVideos,
+    quickConvertSettings,
+    quickConvertCustomTemplates,
+    activeQuickConvertTemplateId,
+    canSaveQuickConvertTemplate,
+    showQuickConvertTemplateSaveModal,
+    quickConvertTemplateModalMode,
+    quickConvertTemplateDraftTitle,
+    quickConvertTemplateDraftDescription,
+    showQuickConvertCodecGuide,
+    setShowQuickConvertCodecGuide,
+    handleQuickConvertBatchVideosChange,
+    clearQuickConvertBatchVideos,
+    removeQuickConvertBatchVideo,
+    applyQuickConvertTemplateById,
+    openQuickConvertTemplateSaveModal,
+    openQuickConvertTemplateRenameModal,
+    deleteQuickConvertTemplate,
+    closeQuickConvertTemplateSaveModal,
+    updateQuickConvertTemplateDraftTitle,
+    updateQuickConvertTemplateDraftDescription,
+    confirmQuickConvertTemplateSave,
+    updateQuickConvertFormat,
+    updateQuickConvertVideoCodec,
+    updateQuickConvertAudioCodec,
+    updateQuickConvertCrf,
+    updateQuickConvertPerformanceMode,
+    runQuickConvertBatchExport
+  } = useQuickConvertBatch({
+    t: tForFeatures,
+    exportController: exportProgressController
+  });
+
+  useEffect(() => {
+    if (!isQuickConvertPanelOpen) {
+      setShowQuickConvertCodecGuide(false);
+    }
+  }, [isQuickConvertPanelOpen, setShowQuickConvertCodecGuide]);
 
   useEffect(() => {
     isPreparingPreviewRef.current = isPreparingPreview;
@@ -1262,6 +1304,9 @@ function App() {
   const quickLutBatchTotalSizeBytes = quickLutBatchVideos.reduce((sum, item) => sum + item.sizeBytes, 0);
   const quickLutBatchTotalSizeLabel = formatFileSize(quickLutBatchTotalSizeBytes);
   const quickLutBatchLutFileName = quickLutBatchLutPath ? getFileNameFromPath(quickLutBatchLutPath) : t('lutNotSelected');
+  const quickConvertVideoCountLabel = t('quickConvertVideoCount', { count: quickConvertBatchVideos.length });
+  const quickConvertTotalSizeBytes = quickConvertBatchVideos.reduce((sum, item) => sum + item.sizeBytes, 0);
+  const quickConvertTotalSizeLabel = formatFileSize(quickConvertTotalSizeBytes);
   const quickLutPreviewActiveVideo = quickLutPreviewVideoId
     ? quickLutBatchVideos.find((video) => video.id === quickLutPreviewVideoId) ?? null
     : null;
@@ -1272,6 +1317,8 @@ function App() {
     ? t('exportingVideos')
     : exportMode === 'split'
       ? t('quickSplitting')
+      : exportMode === 'convert'
+        ? t('quickConverting')
       : t('exportingClips');
 
   return (
@@ -1432,6 +1479,43 @@ function App() {
             onChangeQuickLutBatchLutIntensity={(value) => setQuickLutBatchLutIntensity(clampLutIntensity(value))}
             onRunQuickLutBatchExport={() => {
               void runQuickLutBatchExport();
+            }}
+            isQuickConvertPanelOpen={isQuickConvertPanelOpen}
+            onToggleQuickConvertPanel={() => {
+              setActiveQuickAction((prev) => prev === 'convert-batch' ? null : 'convert-batch');
+            }}
+            quickConvertVideoCountLabel={quickConvertVideoCountLabel}
+            quickConvertTotalSizeLabel={quickConvertTotalSizeLabel}
+            quickConvertBatchVideos={quickConvertBatchVideos}
+            quickConvertCustomTemplates={quickConvertCustomTemplates}
+            onQuickConvertBatchVideosChange={handleQuickConvertBatchVideosChange}
+            onClearQuickConvertBatchVideos={clearQuickConvertBatchVideos}
+            onRemoveQuickConvertBatchVideo={removeQuickConvertBatchVideo}
+            quickConvertSettings={quickConvertSettings}
+            activeQuickConvertTemplateId={activeQuickConvertTemplateId}
+            canSaveQuickConvertTemplate={canSaveQuickConvertTemplate}
+            onApplyQuickConvertTemplateById={applyQuickConvertTemplateById}
+            showQuickConvertTemplateSaveModal={showQuickConvertTemplateSaveModal}
+            quickConvertTemplateModalMode={quickConvertTemplateModalMode}
+            quickConvertTemplateDraftTitle={quickConvertTemplateDraftTitle}
+            quickConvertTemplateDraftDescription={quickConvertTemplateDraftDescription}
+            onOpenQuickConvertTemplateSaveModal={openQuickConvertTemplateSaveModal}
+            onOpenQuickConvertTemplateRenameModal={openQuickConvertTemplateRenameModal}
+            onDeleteQuickConvertTemplate={deleteQuickConvertTemplate}
+            onCloseQuickConvertTemplateSaveModal={closeQuickConvertTemplateSaveModal}
+            onChangeQuickConvertTemplateDraftTitle={updateQuickConvertTemplateDraftTitle}
+            onChangeQuickConvertTemplateDraftDescription={updateQuickConvertTemplateDraftDescription}
+            onConfirmQuickConvertTemplateSave={confirmQuickConvertTemplateSave}
+            onChangeQuickConvertFormat={updateQuickConvertFormat}
+            onChangeQuickConvertVideoCodec={updateQuickConvertVideoCodec}
+            onChangeQuickConvertAudioCodec={updateQuickConvertAudioCodec}
+            onChangeQuickConvertCrf={updateQuickConvertCrf}
+            onChangeQuickConvertPerformanceMode={updateQuickConvertPerformanceMode}
+            showQuickConvertCodecGuide={showQuickConvertCodecGuide}
+            onOpenQuickConvertCodecGuide={() => setShowQuickConvertCodecGuide(true)}
+            onCloseQuickConvertCodecGuide={() => setShowQuickConvertCodecGuide(false)}
+            onRunQuickConvertBatchExport={() => {
+              void runQuickConvertBatchExport();
             }}
             isExporting={isExporting}
             exportMode={exportMode}

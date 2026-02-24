@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 dist-electron
 release
+
+*.md
+!README.md
