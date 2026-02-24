@@ -4,14 +4,277 @@
 
 @layer base {
   :root {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+    --background: 223 42% 8%;
+    --foreground: 210 33% 97%;
+    --surface-950: #070b12;
+    --surface-900: #0f1726;
+    --surface-800: #172035;
+    --text-100: #f5f7fb;
+    --text-200: #d9e0ef;
+    --text-300: #aeb9cd;
+    --text-400: #8f9ab1;
+    --text-500: #68758d;
+    --text-600: #556179;
+    --border-softer: rgba(255, 255, 255, 0.05);
+    --border-soft: rgba(255, 255, 255, 0.1);
+    --border-medium: rgba(255, 255, 255, 0.15);
+    --border-strong: rgba(255, 255, 255, 0.2);
+  }
+
+  :root[data-theme='light'] {
+    --background: 205 42% 96%;
+    --foreground: 220 34% 18%;
+    --surface-950: #eef4fa;
+    --surface-900: #f7faff;
+    --surface-800: #e8eef7;
+    --text-100: #1a2638;
+    --text-200: #273650;
+    --text-300: #465670;
+    --text-400: #61728d;
+    --text-500: #7a8aa2;
+    --text-600: #93a1b4;
+    --border-softer: rgba(35, 55, 86, 0.08);
+    --border-soft: rgba(35, 55, 86, 0.14);
+    --border-medium: rgba(35, 55, 86, 0.2);
+    --border-strong: rgba(35, 55, 86, 0.28);
   }
 }
 
 body {
-  @apply bg-background text-foreground h-screen w-screen overflow-hidden selection:bg-purple-500/30;
+  @apply bg-background text-foreground h-screen w-screen overflow-hidden selection:bg-blue-500/30;
   -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root.theme-switching *,
+  :root.theme-switching *::before,
+  :root.theme-switching *::after {
+    transition-property: background-color, border-color, color, box-shadow, fill, stroke;
+    transition-duration: 420ms;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+:root[data-theme='light'] .bg-zinc-950 {
+  background-color: var(--surface-950) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-900 {
+  background-color: var(--surface-900) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-800,
+:root[data-theme='light'] .bg-zinc-700 {
+  background-color: var(--surface-800) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-950\/30 {
+  background-color: rgba(238, 244, 250, 0.3) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-950\/40 {
+  background-color: rgba(238, 244, 250, 0.4) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-950\/45 {
+  background-color: rgba(238, 244, 250, 0.45) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-950\/65 {
+  background-color: rgba(238, 244, 250, 0.65) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-950\/70 {
+  background-color: rgba(238, 244, 250, 0.7) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-950\/92 {
+  background-color: rgba(238, 244, 250, 0.92) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-900\/20 {
+  background-color: rgba(247, 250, 255, 0.2) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-900\/30 {
+  background-color: rgba(247, 250, 255, 0.3) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-900\/50 {
+  background-color: rgba(247, 250, 255, 0.5) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-900\/55 {
+  background-color: rgba(247, 250, 255, 0.55) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-900\/60 {
+  background-color: rgba(247, 250, 255, 0.6) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-900\/70 {
+  background-color: rgba(247, 250, 255, 0.7) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-900\/80 {
+  background-color: rgba(247, 250, 255, 0.8) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-900\/85 {
+  background-color: rgba(247, 250, 255, 0.85) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-800\/50 {
+  background-color: rgba(232, 238, 247, 0.5) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-800\/60 {
+  background-color: rgba(232, 238, 247, 0.6) !important;
+}
+
+:root[data-theme='light'] .bg-zinc-800\/70 {
+  background-color: rgba(232, 238, 247, 0.7) !important;
+}
+
+:root[data-theme='light'] .text-zinc-100 {
+  color: var(--text-100) !important;
+}
+
+:root[data-theme='light'] .text-zinc-200 {
+  color: var(--text-200) !important;
+}
+
+:root[data-theme='light'] .text-zinc-300 {
+  color: var(--text-300) !important;
+}
+
+:root[data-theme='light'] .text-zinc-400 {
+  color: var(--text-400) !important;
+}
+
+:root[data-theme='light'] .text-zinc-500 {
+  color: var(--text-500) !important;
+}
+
+:root[data-theme='light'] .text-zinc-600 {
+  color: var(--text-600) !important;
+}
+
+:root[data-theme='light'] .text-zinc-900 {
+  color: var(--text-100) !important;
+}
+
+:root[data-theme='light'] .border-white\/5 {
+  border-color: var(--border-softer) !important;
+}
+
+:root[data-theme='light'] .border-white\/10 {
+  border-color: var(--border-soft) !important;
+}
+
+:root[data-theme='light'] .border-white\/15 {
+  border-color: var(--border-medium) !important;
+}
+
+:root[data-theme='light'] .border-white\/20 {
+  border-color: var(--border-strong) !important;
+}
+
+:root[data-theme='light'] .border-zinc-700 {
+  border-color: var(--border-medium) !important;
+}
+
+:root[data-theme='light'] .border-zinc-600 {
+  border-color: var(--border-strong) !important;
+}
+
+:root[data-theme='light'] .hover\:bg-zinc-700:hover,
+:root[data-theme='light'] .hover\:bg-zinc-800:hover,
+:root[data-theme='light'] .hover\:bg-zinc-800\/50:hover,
+:root[data-theme='light'] .hover\:bg-zinc-800\/60:hover,
+:root[data-theme='light'] .hover\:bg-zinc-800\/70:hover {
+  background-color: rgba(220, 229, 241, 0.9) !important;
+}
+
+:root[data-theme='light'] .hover\:text-zinc-200:hover,
+:root[data-theme='light'] .hover\:text-white:hover {
+  color: var(--text-100) !important;
+}
+
+:root[data-theme='light'] .hover\:border-zinc-600:hover {
+  border-color: var(--border-strong) !important;
+}
+
+:root[data-theme='light'] .from-white {
+  --tw-gradient-from: #1a2638 var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(26 38 56 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+:root[data-theme='light'] .to-zinc-400 {
+  --tw-gradient-to: #68788f var(--tw-gradient-to-position) !important;
+}
+
+:root[data-theme='light'] .quick-convert-performance-option--active {
+  color: #9a5800 !important;
+  background-color: rgba(245, 158, 11, 0.18) !important;
+  border-color: rgba(217, 119, 6, 0.42) !important;
+}
+
+:root[data-theme='light'] .quick-convert-performance-option:not(.quick-convert-performance-option--active):hover {
+  border-color: rgba(217, 119, 6, 0.32) !important;
+}
+
+:root[data-theme='light'] .segment-index-badge {
+  color: #1d4ed8 !important;
+  background-color: rgba(59, 130, 246, 0.2) !important;
+  border: 1px solid rgba(37, 99, 235, 0.42) !important;
+  font-weight: 700;
+}
+
+:root[data-theme='light'] .segment-tag-chip {
+  color: #0f4a6b !important;
+  background-color: rgba(56, 189, 248, 0.2) !important;
+  border-color: rgba(14, 116, 144, 0.35) !important;
+}
+
+:root[data-theme='light'] .segment-tag-option {
+  color: #475569 !important;
+  background-color: rgba(248, 250, 252, 0.95) !important;
+  border-color: rgba(148, 163, 184, 0.42) !important;
+}
+
+:root[data-theme='light'] .segment-tag-option:hover {
+  color: #334155 !important;
+  background-color: rgba(239, 246, 255, 0.95) !important;
+  border-color: rgba(37, 99, 235, 0.32) !important;
+}
+
+:root[data-theme='light'] .segment-tag-option--active {
+  color: #1e40af !important;
+  background-color: rgba(59, 130, 246, 0.2) !important;
+  border-color: rgba(37, 99, 235, 0.45) !important;
+}
+
+:root[data-theme='light'] .segment-current-badge {
+  color: #0f4a6b !important;
+  background-color: rgba(56, 189, 248, 0.24) !important;
+  border-color: rgba(8, 145, 178, 0.45) !important;
+  font-weight: 700;
+}
+
+:root[data-theme='light'] .queue-current-badge {
+  color: #0f4a6b !important;
+  background-color: rgba(56, 189, 248, 0.26) !important;
+  border-color: rgba(8, 145, 178, 0.48) !important;
+  font-weight: 700;
+}
+
+:root[data-theme='light'] .lut-preview-current-badge {
+  color: #166534 !important;
+  background-color: rgba(16, 185, 129, 0.24) !important;
+  border-color: rgba(5, 150, 105, 0.45) !important;
+  font-weight: 700;
 }
 
 /* Electron Drag Regions */

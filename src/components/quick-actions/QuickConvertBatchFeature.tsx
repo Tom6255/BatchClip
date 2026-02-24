@@ -594,9 +594,9 @@ const QuickConvertBatchFeature = ({
                   type="button"
                   onClick={() => onChangePerformanceMode('auto')}
                   className={cn(
-                    'h-8 rounded-md border text-xs transition-colors',
+                    'quick-convert-performance-option h-8 rounded-md border text-xs font-medium transition-colors',
                     quickConvertSettings.performanceMode === 'auto'
-                      ? 'border-amber-400/50 bg-amber-500/10 text-amber-200'
+                      ? 'quick-convert-performance-option--active border-amber-400/50 bg-amber-500/10 text-amber-200'
                       : 'border-white/10 bg-zinc-900/70 text-zinc-300 hover:border-amber-500/30'
                   )}
                 >
@@ -606,9 +606,9 @@ const QuickConvertBatchFeature = ({
                   type="button"
                   onClick={() => onChangePerformanceMode('cpu')}
                   className={cn(
-                    'h-8 rounded-md border text-xs transition-colors',
+                    'quick-convert-performance-option h-8 rounded-md border text-xs font-medium transition-colors',
                     quickConvertSettings.performanceMode === 'cpu'
-                      ? 'border-amber-400/50 bg-amber-500/10 text-amber-200'
+                      ? 'quick-convert-performance-option--active border-amber-400/50 bg-amber-500/10 text-amber-200'
                       : 'border-white/10 bg-zinc-900/70 text-zinc-300 hover:border-amber-500/30'
                   )}
                 >

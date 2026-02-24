@@ -2,7 +2,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import { Settings as SettingsIcon, X } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import Button from '../../../components/ui/Button';
-import type { Language, TranslationKey } from '../../../i18n/translations';
+import type { TranslationKey } from '../../../i18n/translations';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -19,12 +19,8 @@ interface SettingsModalProps {
   onClearLut: () => void;
   enableLutPreview: boolean;
   onToggleLutPreview: () => void;
-  language: Language;
-  setLanguage: Dispatch<SetStateAction<Language>>;
 }
 
-// EN: Main feature settings modal, extracted from App to keep shell lightweight.
-// ZH: 主功能设置弹窗，从 App 抽离，降低页面壳层复杂度。
 const SettingsModal = ({
   visible,
   t,
@@ -39,9 +35,7 @@ const SettingsModal = ({
   onImportLut,
   onClearLut,
   enableLutPreview,
-  onToggleLutPreview,
-  language,
-  setLanguage
+  onToggleLutPreview
 }: SettingsModalProps) => {
   if (!visible) {
     return null;
@@ -75,10 +69,12 @@ const SettingsModal = ({
                   useFixedDuration ? 'bg-blue-600' : 'bg-zinc-700'
                 )}
               >
-                <div className={cn(
-                  'w-4 h-4 rounded-full bg-white transition-transform duration-200 mx-1',
-                  useFixedDuration ? 'translate-x-5' : 'translate-x-0'
-                )} />
+                <div
+                  className={cn(
+                    'w-4 h-4 rounded-full bg-white transition-transform duration-200 mx-1',
+                    useFixedDuration ? 'translate-x-5' : 'translate-x-0'
+                  )}
+                />
               </button>
             </div>
 
@@ -121,10 +117,12 @@ const SettingsModal = ({
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <p className="text-[11px] text-zinc-500">{t('lutFile')}</p>
-                    <p className={cn(
-                      'text-xs font-mono truncate mt-1',
-                      hasLutFile ? 'text-zinc-200' : 'text-zinc-500'
-                    )}>
+                    <p
+                      className={cn(
+                        'text-xs font-mono truncate mt-1',
+                        hasLutFile ? 'text-zinc-200' : 'text-zinc-500'
+                      )}
+                    >
                       {lutFileName}
                     </p>
                   </div>
@@ -162,42 +160,14 @@ const SettingsModal = ({
                       !hasLutFile && 'opacity-50 cursor-not-allowed'
                     )}
                   >
-                    <div className={cn(
-                      'w-4 h-4 rounded-full bg-white transition-transform duration-200 mx-1',
-                      enableLutPreview ? 'translate-x-5' : 'translate-x-0'
-                    )} />
+                    <div
+                      className={cn(
+                        'w-4 h-4 rounded-full bg-white transition-transform duration-200 mx-1',
+                        enableLutPreview ? 'translate-x-5' : 'translate-x-0'
+                      )}
+                    />
                   </button>
                 </div>
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-white/5 space-y-3">
-              <label className="text-sm font-medium text-zinc-200 block">
-                {t('language')}
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => setLanguage('en')}
-                  className={cn(
-                    'px-3 py-2 rounded-lg text-sm transition-all border',
-                    language === 'en'
-                      ? 'bg-blue-600/10 border-blue-500 text-blue-500'
-                      : 'bg-zinc-800/50 border-white/5 text-zinc-400 hover:text-zinc-200'
-                  )}
-                >
-                  English
-                </button>
-                <button
-                  onClick={() => setLanguage('zh')}
-                  className={cn(
-                    'px-3 py-2 rounded-lg text-sm transition-all border',
-                    language === 'zh'
-                      ? 'bg-blue-600/10 border-blue-500 text-blue-500'
-                      : 'bg-zinc-800/50 border-white/5 text-zinc-400 hover:text-zinc-200'
-                  )}
-                >
-                  中文
-                </button>
               </div>
             </div>
           </div>

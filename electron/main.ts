@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, nativeTheme } from 'electron'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -32,6 +32,25 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 let win: BrowserWindow | null
 const previewProxyPaths = new Set<string>()
 const probeInfoCache = new Map<string, ProbeCacheEntry>()
+
+type WindowTheme = 'dark' | 'light'
+
+const WINDOW_THEME_CONFIG: Record<WindowTheme, {
+  backgroundColor: string
+  overlayColor: string
+  symbolColor: string
+}> = {
+  dark: {
+    backgroundColor: '#09090b',
+    overlayColor: '#09090b',
+    symbolColor: '#ffffff'
+  },
+  light: {
+    backgroundColor: '#f7faff',
+    overlayColor: '#f7faff',
+    symbolColor: '#0f172a'
+  }
+}
 
 // On macOS, force software rendering for better compatibility with problematic media decoders.
 // Set BATCHCLIP_FORCE_HW_ACCEL=1 to opt back in to hardware acceleration.
@@ -133,8 +152,8 @@ const PREVIEW_WINDOWS_AMF_ENCODER: PreviewEncoderConfig = {
   outputOptions: ['-quality', 'speed', '-b:v', '2M', '-maxrate', '3M', '-bufsize', '6M']
 }
 
-const EXPORT_PRIMARY_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET || 'fast'
-const EXPORT_FALLBACK_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET_FALLBACK || 'medium'
+const EXPORT_PRIMARY_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET || 'medium'
+const EXPORT_FALLBACK_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET_FALLBACK || 'slow'
 const MAX_PROBE_CACHE_ENTRIES = 128
 const INVALID_FILENAME_CHARS = /[<>:"/\\|?*]/g
 const BYTES_PER_MEGABYTE = 1024 * 1024
@@ -144,7 +163,7 @@ const MAX_SPLIT_SEGMENTS = 10000
 const EXPORT_WINDOWS_NVENC_ENCODER: ExportEncoderConfig = {
   name: 'h264_nvenc',
   videoCodec: 'h264_nvenc',
-  outputOptions: ['-preset', 'p4', '-rc', 'vbr']
+  outputOptions: ['-preset', 'p6', '-tune', 'hq', '-rc', 'vbr_hq']
 }
 
 const EXPORT_WINDOWS_QSV_ENCODER: ExportEncoderConfig = {
@@ -156,7 +175,7 @@ const EXPORT_WINDOWS_QSV_ENCODER: ExportEncoderConfig = {
 const EXPORT_WINDOWS_AMF_ENCODER: ExportEncoderConfig = {
   name: 'h264_amf',
   videoCodec: 'h264_amf',
-  outputOptions: ['-quality', 'speed']
+  outputOptions: ['-quality', 'quality']
 }
 
 const EXPORT_DARWIN_VIDEOTOOLBOX_ENCODER: ExportEncoderConfig = {
@@ -164,6 +183,15 @@ const EXPORT_DARWIN_VIDEOTOOLBOX_ENCODER: ExportEncoderConfig = {
   videoCodec: 'h264_videotoolbox',
   outputOptions: ['-allow_sw', '1']
 }
+
+const LUT_EXPORT_VIDEO_BITRATE_SCALE = 1.12
+const LUT_EXPORT_VIDEO_MAXRATE_SCALE = 1.28
+const LUT_EXPORT_VIDEO_BUFSIZE_SCALE = 2.0
+const LUT_EXPORT_MIN_VIDEO_BITRATE_KBPS = 600
+const LUT_EXPORT_MAX_VIDEO_BITRATE_KBPS = 120000
+const LUT_EXPORT_FALLBACK_AAC_BITRATE_KBPS = 192
+const LUT_EXPORT_MIN_AAC_BITRATE_KBPS = 96
+const LUT_EXPORT_MAX_AAC_BITRATE_KBPS = 512
 
 const DEFAULT_CONVERT_CRF = 23
 const MIN_CONVERT_CRF = 0
@@ -238,6 +266,20 @@ function sanitizeFilenamePart(value: string): string {
     .replace(/\s+/g, ' ')
     .trim()
   return sanitized.replace(/\.+$/, '')
+}
+
+function resolveStreamCopyOutputExtension(filePath: string): string {
+  const sourceExt = path.extname(filePath).toLowerCase()
+  if (!sourceExt) {
+    return '.mp4'
+  }
+
+  // .m4s is a DASH segment container and is not a suitable output target for clip exports.
+  if (sourceExt === '.m4s') {
+    return '.mp4'
+  }
+
+  return sourceExt
 }
 
 function normalizeSegmentTags(value: unknown): string[] {
@@ -685,6 +727,36 @@ function mapCrfToAv1Crf(crf: number): number {
   return Math.min(63, Math.max(0, Math.round((crf / MAX_CONVERT_CRF) * 63)))
 }
 
+function clampLutExportBitrateKbps(value: number): number {
+  return Math.min(
+    LUT_EXPORT_MAX_VIDEO_BITRATE_KBPS,
+    Math.max(LUT_EXPORT_MIN_VIDEO_BITRATE_KBPS, Math.round(value))
+  )
+}
+
+function buildLutExportVideoBitrateOptions(sourceVideoBitRateKbps: number): string[] {
+  const targetBitrateKbps = clampLutExportBitrateKbps(sourceVideoBitRateKbps * LUT_EXPORT_VIDEO_BITRATE_SCALE)
+  const maxRateKbps = clampLutExportBitrateKbps(targetBitrateKbps * LUT_EXPORT_VIDEO_MAXRATE_SCALE)
+  const bufferSizeKbps = clampLutExportBitrateKbps(targetBitrateKbps * LUT_EXPORT_VIDEO_BUFSIZE_SCALE)
+
+  return [
+    '-b:v', `${targetBitrateKbps}k`,
+    '-maxrate', `${Math.max(targetBitrateKbps, maxRateKbps)}k`,
+    '-bufsize', `${Math.max(targetBitrateKbps, bufferSizeKbps)}k`
+  ]
+}
+
+function resolveLutFallbackAudioBitrateKbps(sourceAudioBitRateKbps: number | null): number {
+  const candidate = sourceAudioBitRateKbps && Number.isFinite(sourceAudioBitRateKbps)
+    ? Math.round(sourceAudioBitRateKbps)
+    : LUT_EXPORT_FALLBACK_AAC_BITRATE_KBPS
+  return Math.min(LUT_EXPORT_MAX_AAC_BITRATE_KBPS, Math.max(LUT_EXPORT_MIN_AAC_BITRATE_KBPS, candidate))
+}
+
+function isLikelyAudioCopyFailure(errorMessage: string): boolean {
+  return /audio|codec .* not currently supported in container|could not find tag for codec|could not write header/i.test(errorMessage)
+}
+
 function buildConvertEncoderAttempts(options: {
   videoCodec: ConvertVideoCodecTarget
   performanceMode: ConvertPerformanceMode
@@ -841,19 +913,16 @@ function buildExportOutputOptions(options: {
   lutPath?: string | null
   lutIntensity?: number
   sourceVideoBitRateKbps?: number | null
-  sourceAudioBitRateKbps?: number | null
 }): string[] {
   const {
     encoder,
     lutPath = null,
     lutIntensity = 100,
-    sourceVideoBitRateKbps = null,
-    sourceAudioBitRateKbps = null
+    sourceVideoBitRateKbps = null
   } = options
 
   const outputOptions = [
     '-movflags', 'use_metadata_tags',
-    '-pix_fmt', 'yuv420p',
     ...encoder.outputOptions
   ]
 
@@ -863,11 +932,7 @@ function buildExportOutputOptions(options: {
   }
 
   if (sourceVideoBitRateKbps && sourceVideoBitRateKbps > 0) {
-    outputOptions.push('-b:v', `${Math.round(sourceVideoBitRateKbps)}k`)
-  }
-
-  if (sourceAudioBitRateKbps && sourceAudioBitRateKbps > 0) {
-    outputOptions.push('-b:a', `${Math.round(sourceAudioBitRateKbps)}k`)
+    outputOptions.push(...buildLutExportVideoBitrateOptions(sourceVideoBitRateKbps))
   }
 
   return outputOptions
@@ -978,8 +1043,44 @@ async function exportSingleClip(options: {
     onProgress
   } = options
 
+  const shouldApplyLut = Boolean(lutPath)
+  if (!shouldApplyLut) {
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(filePath)
+        .setStartTime(startSec)
+        .setDuration(durationSec)
+        .output(outputPath)
+        .outputOptions([
+          '-map', '0:v:0',
+          '-map', '0:a:0?',
+          '-c:v', 'copy',
+          '-c:a', 'copy',
+          '-dn',
+          '-avoid_negative_ts', 'make_zero'
+        ])
+        .on('progress', (progress) => {
+          let segmentPercent = typeof progress.percent === 'number' ? progress.percent : null
+          if ((segmentPercent === null || !Number.isFinite(segmentPercent)) && durationSec > 0) {
+            const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+            if (processedSeconds !== null) {
+              segmentPercent = (processedSeconds / durationSec) * 100
+            }
+          }
+
+          if (segmentPercent !== null && Number.isFinite(segmentPercent)) {
+            onProgress?.(Math.min(100, Math.max(0, segmentPercent)))
+          }
+        })
+        .on('end', () => resolve())
+        .on('error', (err) => reject(err))
+        .run()
+    })
+    return
+  }
+
   const encoderAttempts = getExportEncoderAttempts()
   let lastErrorMessage = 'Failed to export clip'
+  const fallbackAudioBitrateKbps = resolveLutFallbackAudioBitrateKbps(sourceAudioBitRateKbps)
 
   for (let index = 0; index < encoderAttempts.length; index++) {
     const encoder = encoderAttempts[index]
@@ -987,43 +1088,68 @@ async function exportSingleClip(options: {
       encoder,
       lutPath,
       lutIntensity,
-      sourceVideoBitRateKbps,
-      sourceAudioBitRateKbps
+      sourceVideoBitRateKbps
+    })
+
+    const runEncodedClip = (audioMode: 'copy' | 'aac') => new Promise<void>((resolve, reject) => {
+      const command = ffmpeg(filePath)
+        .setStartTime(startSec)
+        .setDuration(durationSec)
+        .output(outputPath)
+        .videoCodec(encoder.videoCodec)
+        .outputOptions(outputOptions)
+        .on('progress', (progress) => {
+          let segmentPercent = typeof progress.percent === 'number' ? progress.percent : null
+          if ((segmentPercent === null || !Number.isFinite(segmentPercent)) && durationSec > 0) {
+            const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+            if (processedSeconds !== null) {
+              segmentPercent = (processedSeconds / durationSec) * 100
+            }
+          }
+
+          if (segmentPercent !== null && Number.isFinite(segmentPercent)) {
+            onProgress?.(Math.min(100, Math.max(0, segmentPercent)))
+          }
+        })
+        .on('end', () => resolve())
+        .on('error', (err) => reject(err))
+
+      if (audioMode === 'copy') {
+        command.audioCodec('copy')
+      } else {
+        command.audioCodec('aac')
+        command.audioBitrate(`${fallbackAudioBitrateKbps}k`)
+      }
+
+      command.run()
     })
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        ffmpeg(filePath)
-          .setStartTime(startSec)
-          .setDuration(durationSec)
-          .output(outputPath)
-          .videoCodec(encoder.videoCodec)
-          .audioCodec('aac')
-          .outputOptions(outputOptions)
-          .on('progress', (progress) => {
-            let segmentPercent = typeof progress.percent === 'number' ? progress.percent : null
-            if ((segmentPercent === null || !Number.isFinite(segmentPercent)) && durationSec > 0) {
-              const processedSeconds = parseTimemarkToSeconds(progress.timemark)
-              if (processedSeconds !== null) {
-                segmentPercent = (processedSeconds / durationSec) * 100
-              }
-            }
-
-            if (segmentPercent !== null && Number.isFinite(segmentPercent)) {
-              onProgress?.(Math.min(100, Math.max(0, segmentPercent)))
-            }
-          })
-          .on('end', () => resolve())
-          .on('error', (err) => reject(err))
-          .run()
-      })
+      await runEncodedClip('copy')
       return
-    } catch (error: unknown) {
-      lastErrorMessage = getErrorMessage(error)
+    } catch (copyError: unknown) {
+      const copyErrorMessage = getErrorMessage(copyError)
       await removeFileIfExists(outputPath)
 
-      if (index < encoderAttempts.length - 1) {
-        console.warn(`[BatchClip] Clip export encoder "${encoder.name}" failed, trying fallback.`, error)
+      if (isUnsupportedEncoderError(copyErrorMessage)) {
+        lastErrorMessage = copyErrorMessage
+        if (index < encoderAttempts.length - 1) {
+          console.warn(`[BatchClip] Clip export encoder "${encoder.name}" failed, trying fallback.`, copyError)
+        }
+        continue
+      }
+
+      try {
+        await runEncodedClip('aac')
+        return
+      } catch (aacError: unknown) {
+        lastErrorMessage = getErrorMessage(aacError)
+        await removeFileIfExists(outputPath)
+
+        if (index < encoderAttempts.length - 1) {
+          const errorToLog = isLikelyAudioCopyFailure(copyErrorMessage) ? aacError : copyError
+          console.warn(`[BatchClip] Clip export encoder "${encoder.name}" failed, trying fallback.`, errorToLog)
+        }
       }
     }
   }
@@ -1054,6 +1180,7 @@ async function exportSingleFullVideo(options: {
 
   const encoderAttempts = getExportEncoderAttempts()
   let lastErrorMessage = 'Failed to export full video'
+  const fallbackAudioBitrateKbps = resolveLutFallbackAudioBitrateKbps(sourceAudioBitRateKbps)
 
   for (let index = 0; index < encoderAttempts.length; index++) {
     const encoder = encoderAttempts[index]
@@ -1061,41 +1188,66 @@ async function exportSingleFullVideo(options: {
       encoder,
       lutPath,
       lutIntensity,
-      sourceVideoBitRateKbps,
-      sourceAudioBitRateKbps
+      sourceVideoBitRateKbps
+    })
+
+    const runEncodedFullVideo = (audioMode: 'copy' | 'aac') => new Promise<void>((resolve, reject) => {
+      const command = ffmpeg(filePath)
+        .output(outputPath)
+        .videoCodec(encoder.videoCodec)
+        .outputOptions(outputOptions)
+        .on('progress', (progress) => {
+          let fullPercent = typeof progress.percent === 'number' ? progress.percent : null
+          if ((fullPercent === null || !Number.isFinite(fullPercent)) && durationSec && durationSec > 0) {
+            const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+            if (processedSeconds !== null) {
+              fullPercent = (processedSeconds / durationSec) * 100
+            }
+          }
+
+          if (fullPercent !== null && Number.isFinite(fullPercent)) {
+            onProgress?.(Math.min(100, Math.max(0, fullPercent)))
+          }
+        })
+        .on('end', () => resolve())
+        .on('error', (err) => reject(err))
+
+      if (audioMode === 'copy') {
+        command.audioCodec('copy')
+      } else {
+        command.audioCodec('aac')
+        command.audioBitrate(`${fallbackAudioBitrateKbps}k`)
+      }
+
+      command.run()
     })
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        ffmpeg(filePath)
-          .output(outputPath)
-          .videoCodec(encoder.videoCodec)
-          .audioCodec('aac')
-          .outputOptions(outputOptions)
-          .on('progress', (progress) => {
-            let fullPercent = typeof progress.percent === 'number' ? progress.percent : null
-            if ((fullPercent === null || !Number.isFinite(fullPercent)) && durationSec && durationSec > 0) {
-              const processedSeconds = parseTimemarkToSeconds(progress.timemark)
-              if (processedSeconds !== null) {
-                fullPercent = (processedSeconds / durationSec) * 100
-              }
-            }
-
-            if (fullPercent !== null && Number.isFinite(fullPercent)) {
-              onProgress?.(Math.min(100, Math.max(0, fullPercent)))
-            }
-          })
-          .on('end', () => resolve())
-          .on('error', (err) => reject(err))
-          .run()
-      })
+      await runEncodedFullVideo('copy')
       return
-    } catch (error: unknown) {
-      lastErrorMessage = getErrorMessage(error)
+    } catch (copyError: unknown) {
+      const copyErrorMessage = getErrorMessage(copyError)
       await removeFileIfExists(outputPath)
 
-      if (index < encoderAttempts.length - 1) {
-        console.warn(`[BatchClip] Full export encoder "${encoder.name}" failed, trying fallback.`, error)
+      if (isUnsupportedEncoderError(copyErrorMessage)) {
+        lastErrorMessage = copyErrorMessage
+        if (index < encoderAttempts.length - 1) {
+          console.warn(`[BatchClip] Full export encoder "${encoder.name}" failed, trying fallback.`, copyError)
+        }
+        continue
+      }
+
+      try {
+        await runEncodedFullVideo('aac')
+        return
+      } catch (aacError: unknown) {
+        lastErrorMessage = getErrorMessage(aacError)
+        await removeFileIfExists(outputPath)
+
+        if (index < encoderAttempts.length - 1) {
+          const errorToLog = isLikelyAudioCopyFailure(copyErrorMessage) ? aacError : copyError
+          console.warn(`[BatchClip] Full export encoder "${encoder.name}" failed, trying fallback.`, errorToLog)
+        }
       }
     }
   }
@@ -1321,13 +1473,33 @@ async function cleanupPreviewProxy(proxyPath: string): Promise<void> {
   }
 }
 
+function applyWindowTheme(theme: WindowTheme) {
+  if (!win || win.isDestroyed()) {
+    return
+  }
+
+  const config = WINDOW_THEME_CONFIG[theme]
+  win.setBackgroundColor(config.backgroundColor)
+
+  if (process.platform === 'win32') {
+    win.setTitleBarOverlay({
+      color: config.overlayColor,
+      symbolColor: config.symbolColor,
+      height: 32
+    })
+  }
+}
+
 function createWindow() {
+  const initialTheme: WindowTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  const initialThemeConfig = WINDOW_THEME_CONFIG[initialTheme]
+
   win = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    backgroundColor: '#09090b', // Zinc-950
+    backgroundColor: initialThemeConfig.backgroundColor,
     icon: path.join(process.env.VITE_PUBLIC, 'batchclip.svg'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -1337,8 +1509,8 @@ function createWindow() {
     },
     titleBarStyle: 'hidden', // Custom title bar
     titleBarOverlay: {
-      color: '#09090b',
-      symbolColor: '#ffffff',
+      color: initialThemeConfig.overlayColor,
+      symbolColor: initialThemeConfig.symbolColor,
       height: 32
     }
   })
@@ -1387,6 +1559,20 @@ app.whenReady().then(() => {
 ipcMain.handle('get-file-path', (_event, file) => {
   return (file as { path?: string }).path || null;
 });
+
+ipcMain.handle('set-window-theme', (_event, payload: unknown) => {
+  if (!payload || typeof payload !== 'object') {
+    return { success: false, error: 'Invalid payload' }
+  }
+
+  const data = payload as { theme?: unknown }
+  if (data.theme !== 'dark' && data.theme !== 'light') {
+    return { success: false, error: 'Invalid theme' }
+  }
+
+  applyWindowTheme(data.theme)
+  return { success: true }
+})
 
 
 ipcMain.handle('show-save-dialog', async () => {
@@ -1588,7 +1774,7 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
 
     const safeEstimatedClipDurationSec = Math.max(MIN_SPLIT_CLIP_DURATION_SEC, estimatedClipDurationSec)
     const sourceExt = path.extname(filePath)
-    const outputExt = sourceExt && sourceExt.length > 0 ? sourceExt : '.mp4'
+    const outputExt = resolveStreamCopyOutputExtension(filePath)
     const baseName = path.basename(filePath, sourceExt)
 
     emitExportProgress('start', 0, 0, estimatedTotalClips)
@@ -1697,13 +1883,17 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
 
   const resolvedLutPath = await resolveLutPath(lutPath)
   const resolvedLutIntensity = normalizeLutIntensity(lutIntensity)
-  const {
-    sourceVideoBitRateKbps,
-    sourceAudioBitRateKbps
-  } = await probeSourceInfoWithBitrates(filePath)
+  const shouldApplyLut = Boolean(resolvedLutPath)
+  let sourceVideoBitRateKbps: number | null = null
+  let sourceAudioBitRateKbps: number | null = null
+  if (shouldApplyLut) {
+    const probeResult = await probeSourceInfoWithBitrates(filePath)
+    sourceVideoBitRateKbps = probeResult.sourceVideoBitRateKbps
+    sourceAudioBitRateKbps = probeResult.sourceAudioBitRateKbps
+  }
   const totalSegments = normalizedSegments.length
   const results: Array<{ id: string; success: boolean; path?: string; error?: string }> = []
-  console.log(`Batch processing ${totalSegments} clips from: ${filePath} (LUT: ${resolvedLutPath ? `${path.basename(resolvedLutPath)} @ ${resolvedLutIntensity}%` : 'off'})`)
+  console.log(`Batch processing ${totalSegments} clips from: ${filePath} (mode: ${shouldApplyLut ? `LUT ${path.basename(resolvedLutPath!)} @ ${resolvedLutIntensity}%` : 'stream-copy'})`)
 
   const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
   let lastReportedProgress = -1
@@ -1734,6 +1924,9 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
   await fs.promises.mkdir(outputDir, { recursive: true })
 
   const baseName = path.basename(filePath, path.extname(filePath))
+  const outputExtension = shouldApplyLut
+    ? '.mov'
+    : resolveStreamCopyOutputExtension(filePath)
 
   for (let i = 0; i < totalSegments; i++) {
     const seg = normalizedSegments[i]
@@ -1741,7 +1934,7 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
     const clipIndex = i + 1
     const segmentStartPercent = (i / Math.max(totalSegments, 1)) * 100
     const segmentWeight = 100 / Math.max(totalSegments, 1)
-    const outName = `${buildClipOutputBaseName(baseName, clipIndex, normalizeSegmentTags(seg.tags))}.mov`
+    const outName = `${buildClipOutputBaseName(baseName, clipIndex, normalizeSegmentTags(seg.tags))}${outputExtension}`
     const tempVidPath = path.join(outputDir, outName)
 
     console.log(`Processing clip ${clipIndex}: ${seg.start}-${seg.end} -> ${outName}`)

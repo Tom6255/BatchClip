@@ -7,7 +7,8 @@ import { useQuickSplitBySize } from './features/quick-actions/hooks/useQuickSpli
 import { useQuickLutBatch } from './features/quick-actions/hooks/useQuickLutBatch';
 import { useQuickConvertBatch } from './features/quick-actions/hooks/useQuickConvertBatch';
 import AppHeader from './features/main/components/AppHeader';
-import { useMainSettings } from './features/main/hooks/useMainSettings';
+import GlobalStatusBar from './features/main/components/GlobalStatusBar';
+import { useMainSettings, type ThemePreference } from './features/main/hooks/useMainSettings';
 import SettingsModal from './features/main/components/SettingsModal';
 import QueueModal from './features/main/components/QueueModal';
 import LutFullExportConfirmModal from './features/main/components/LutFullExportConfirmModal';
@@ -17,6 +18,7 @@ import MainLandingWorkspace from './features/main/components/MainLandingWorkspac
 import type { QueueVideoItem, Segment } from './features/main/types';
 import { translations, type TranslationKey } from './i18n/translations';
 import { v4 as uuidv4 } from 'uuid';
+import packageJson from '../package.json';
 
 const DEFAULT_FIXED_DURATION = 3.9;
 const DEFAULT_LUT_INTENSITY = 100;
@@ -26,6 +28,7 @@ const MAX_TAG_LENGTH = 24;
 const DEFAULT_SPLIT_TARGET_SIZE_MB = 800;
 const MIN_SPLIT_TARGET_SIZE_MB = 1;
 const MAX_SPLIT_TARGET_SIZE_MB = 1024 * 100;
+const APP_VERSION = packageJson.version;
 
 const clampLutIntensity = (value: number) => {
   if (!Number.isFinite(value)) {
@@ -154,6 +157,9 @@ function App() {
     setDefaultDuration,
     language,
     setLanguage,
+    themePreference,
+    setThemePreference,
+    resolvedTheme,
     lutFilePath,
     setLutFilePath,
     enableLutPreview,
@@ -184,6 +190,34 @@ function App() {
   const tForFeatures = useCallback((key: string, params?: Record<string, string | number>) => {
     return t(key as TranslationKey, params);
   }, [t]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = resolvedTheme;
+    root.style.colorScheme = resolvedTheme;
+    void window.ipcRenderer.setWindowTheme({ theme: resolvedTheme }).catch((error: unknown) => {
+      console.warn('[BatchClip] Failed to sync window theme:', error);
+    });
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.add('theme-switching');
+    const timer = window.setTimeout(() => {
+      root.classList.remove('theme-switching');
+    }, 420);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [resolvedTheme]);
+
+  const toggleLanguage = useCallback(() => {
+    setLanguage((prev) => (prev === 'zh' ? 'en' : 'zh'));
+  }, [setLanguage]);
+
+  const changeThemePreference = useCallback((nextTheme: ThemePreference) => {
+    setThemePreference(nextTheme);
+  }, [setThemePreference]);
 
   useEffect(() => {
     localStorage.setItem(TAG_LIBRARY_STORAGE_KEY, JSON.stringify(tagLibrary));
@@ -1323,10 +1357,10 @@ function App() {
 
   return (
     <div
-      className="h-screen bg-zinc-950 text-zinc-100 selection:bg-blue-500/30 flex flex-col overflow-hidden"
+      className="h-screen bg-zinc-950 text-zinc-100 selection:bg-blue-500/30 flex flex-col overflow-hidden transition-colors duration-300"
       style={{ fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif' }}
     >
-      <AppHeader />
+      <AppHeader theme={resolvedTheme} />
 
       <SettingsModal
         visible={showSettings}
@@ -1351,8 +1385,6 @@ function App() {
           }
           setEnableLutPreview(!enableLutPreview);
         }}
-        language={language}
-        setLanguage={setLanguage}
       />
 
       <QueueModal
@@ -1591,6 +1623,16 @@ function App() {
           />
         )}
       </main>
+
+      <GlobalStatusBar
+        t={t}
+        language={language}
+        onToggleLanguage={toggleLanguage}
+        themePreference={themePreference}
+        resolvedTheme={resolvedTheme}
+        onChangeThemePreference={changeThemePreference}
+        appVersion={APP_VERSION}
+      />
     </div>
   );
 }

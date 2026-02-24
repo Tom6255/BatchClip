@@ -493,7 +493,7 @@ export const QuickLutPreviewVideoListModal = ({
                     <p className="text-[11px] text-zinc-500 mt-1 font-mono">{formatFileSize(videoItem.sizeBytes)}</p>
                   </div>
                   {isActive ? (
-                    <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    <span className="lut-preview-current-badge text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                       {t('currentVideo')}
                     </span>
                   ) : (

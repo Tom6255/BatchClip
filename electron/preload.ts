@@ -71,6 +71,10 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     lutPath: string
   }) => ipcRenderer.invoke('read-lut-file', opts),
 
+  setWindowTheme: (opts: {
+    theme: 'dark' | 'light'
+  }) => ipcRenderer.invoke('set-window-theme', opts),
+
   showOpenDialog: () => ipcRenderer.invoke('show-open-dialog'),
   showOpenLutDialog: () => ipcRenderer.invoke('show-open-lut-dialog'),
   showSaveDialog: () => ipcRenderer.invoke('show-save-dialog')

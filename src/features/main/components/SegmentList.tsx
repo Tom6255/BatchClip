@@ -64,7 +64,7 @@ const SegmentList = memo(function SegmentList({
                 {videoItem.displayName}
               </p>
               {isActiveVideo ? (
-                <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                <span className="segment-current-badge text-[10px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
                   {currentLabel}
                 </span>
               ) : (
@@ -86,7 +86,7 @@ const SegmentList = memo(function SegmentList({
               return (
                 <div key={seg.id} className="bg-zinc-950 p-3 rounded border border-white/5 group space-y-2">
                   <div className="flex items-center gap-3">
-                    <div className="w-6 h-6 rounded-full bg-blue-900/50 text-blue-400 flex items-center justify-center text-xs font-mono">
+                    <div className="segment-index-badge w-6 h-6 rounded-full bg-blue-900/50 text-blue-400 flex items-center justify-center text-xs font-mono">
                       {idx + 1}
                     </div>
                     <div className="flex-1 min-w-0">
@@ -113,7 +113,7 @@ const SegmentList = memo(function SegmentList({
                             <button
                               key={tagName}
                               type="button"
-                              className="px-2 py-0.5 rounded-md border border-cyan-500/20 bg-cyan-500/10 text-[11px] text-cyan-200 hover:bg-cyan-500/20 transition-colors"
+                              className="segment-tag-chip px-2 py-0.5 rounded-md border border-cyan-500/20 bg-cyan-500/10 text-[11px] text-cyan-200 hover:bg-cyan-500/20 transition-colors"
                               onClick={() => onToggleSegmentTag(videoItem.id, seg.id, tagName)}
                             >
                               {tagName}
@@ -147,9 +147,9 @@ const SegmentList = memo(function SegmentList({
                                   type="button"
                                   onClick={() => onToggleSegmentTag(videoItem.id, seg.id, tagName)}
                                   className={cn(
-                                    'px-2 py-0.5 rounded-md border text-[11px] transition-colors',
+                                    'segment-tag-option px-2 py-0.5 rounded-md border text-[11px] transition-colors',
                                     isSelected
-                                      ? 'border-blue-500/50 bg-blue-500/20 text-blue-200'
+                                      ? 'segment-tag-option--active border-blue-500/50 bg-blue-500/20 text-blue-200'
                                       : 'border-white/10 bg-zinc-800/70 text-zinc-300 hover:border-blue-400/40 hover:text-zinc-100'
                                   )}
                                 >

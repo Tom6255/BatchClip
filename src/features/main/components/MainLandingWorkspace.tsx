@@ -230,7 +230,7 @@ const MainLandingWorkspace = ({
           )}
         >
           <Upload className="w-12 h-12 mx-auto text-zinc-600" />
-          <h2 className="text-2xl font-semibold text-white">{t('dropVideo')}</h2>
+          <h2 className="text-2xl font-semibold text-zinc-100">{t('dropVideo')}</h2>
           <input type="file" className="hidden" id="file-upload" multiple accept={videoFileAccept} onChange={onSourceVideosChange} />
           <Button onClick={() => document.getElementById('file-upload')?.click()}>{t('selectVideo')}</Button>
         </div>

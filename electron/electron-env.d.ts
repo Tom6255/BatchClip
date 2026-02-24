@@ -122,6 +122,13 @@ interface Window {
       error?: string;
     }>;
 
+    setWindowTheme: (opts: {
+      theme: 'dark' | 'light';
+    }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+
     showOpenDialog: () => Promise<string | null>;
     showOpenLutDialog: () => Promise<string | null>;
     showSaveDialog: () => Promise<string | null>;
