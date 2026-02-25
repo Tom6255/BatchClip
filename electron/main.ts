@@ -363,6 +363,47 @@ function parseTimemarkToSeconds(timemark: string): number | null {
   return hours * 3600 + minutes * 60 + seconds
 }
 
+async function isRecoverableSizeSplitFfmpegFailure(options: {
+  outputPath: string
+  errorMessage: string
+  stderrOutput: string
+}): Promise<boolean> {
+  const { outputPath, errorMessage, stderrOutput } = options
+  const normalized = `${errorMessage}\n${stderrOutput}`.toLowerCase()
+  const fatalPatterns = [
+    /no space left on device/,
+    /permission denied/,
+    /operation not permitted/,
+    /invalid argument/,
+    /input\/output error/,
+    /i\/o error/,
+    /resource busy/,
+    /device not configured/
+  ]
+  if (fatalPatterns.some((pattern) => pattern.test(normalized))) {
+    return false
+  }
+
+  const hasExpectedFailureMarker = normalized.includes('conversion failed')
+    || normalized.includes('ffmpeg exited with code')
+    || normalized.includes('lsize=')
+  if (!hasExpectedFailureMarker) {
+    return false
+  }
+
+  try {
+    const stat = await fs.promises.stat(outputPath)
+    if (!stat.isFile() || stat.size <= 0) {
+      return false
+    }
+
+    const clipInfo = await probeVideoInfo(outputPath)
+    return !!clipInfo.stream && !!clipInfo.durationSec && clipInfo.durationSec > MIN_SPLIT_CLIP_DURATION_SEC
+  } catch {
+    return false
+  }
+}
+
 function runFfmpegCommand(command: ffmpeg.FfmpegCommand): Promise<void> {
   return new Promise((resolve, reject) => {
     command.on('end', () => resolve()).on('error', (err: Error) => reject(err)).run()
@@ -1386,6 +1427,15 @@ async function exportSingleSizeSplitClip(options: {
   } = options
 
   await new Promise<void>((resolve, reject) => {
+    let settled = false
+    const settleOnce = (handler: () => void) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      handler()
+    }
+
     ffmpeg(filePath)
       .setStartTime(Math.max(0, startSec))
       .output(outputPath)
@@ -1409,8 +1459,25 @@ async function exportSingleSizeSplitClip(options: {
           onProgress?.(fallbackProgressSeconds)
         }
       })
-      .on('end', () => resolve())
-      .on('error', (error) => reject(error))
+      .on('end', () => settleOnce(resolve))
+      .on('error', (error, _stdout, stderr) => {
+        void (async () => {
+          const recoverable = await isRecoverableSizeSplitFfmpegFailure({
+            outputPath,
+            errorMessage: getErrorMessage(error),
+            stderrOutput: typeof stderr === 'string' ? stderr : ''
+          })
+          if (recoverable) {
+            console.warn(`[BatchClip] Recovered size-split clip from non-zero ffmpeg exit: ${outputPath}`)
+            settleOnce(resolve)
+            return
+          }
+
+          settleOnce(() => reject(error))
+        })().catch((innerError) => {
+          settleOnce(() => reject(innerError))
+        })
+      })
       .run()
   })
 }
