@@ -498,6 +498,7 @@ export const useQuickConvertBatch = ({
       exportController.setExportProgressClip({ current: 0, total: quickConvertBatchVideos.length });
       exportController.setIsExporting(true);
       let exportCompleted = false;
+      let exportCanceled = false;
 
       try {
         const result = await window.ipcRenderer.processConvertBatch({
@@ -513,6 +514,12 @@ export const useQuickConvertBatch = ({
           performanceMode: quickConvertSettings.performanceMode,
           jobId
         });
+
+        if (result.canceled) {
+          exportCanceled = true;
+          alert(t('exportCanceled'));
+          return;
+        }
 
         const successCount = result.results.filter((item) => item.success).length;
         exportCompleted = true;
@@ -533,7 +540,7 @@ export const useQuickConvertBatch = ({
         if (exportController.activeExportJobIdRef.current === jobId) {
           exportController.activeExportJobIdRef.current = null;
           exportController.activeExportContextRef.current = null;
-          if (exportCompleted) {
+          if (exportCompleted && !exportCanceled) {
             exportController.setExportProgressPercent(100);
             exportController.clearExportProgressTimer();
             exportController.exportProgressHideTimerRef.current = window.setTimeout(() => {

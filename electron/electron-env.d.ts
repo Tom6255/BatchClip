@@ -26,6 +26,8 @@ interface Window {
       jobId?: string
     }) => Promise<{
       success: boolean;
+      canceled?: boolean;
+      error?: string;
       results: Array<{
         id: string;
         success: boolean;
@@ -42,6 +44,8 @@ interface Window {
       jobId?: string;
     }) => Promise<{
       success: boolean;
+      canceled?: boolean;
+      error?: string;
       results: Array<{
         id: string;
         success: boolean;
@@ -57,6 +61,7 @@ interface Window {
       jobId?: string;
     }) => Promise<{
       success: boolean;
+      canceled?: boolean;
       error?: string;
       results: Array<{
         id: string;
@@ -77,6 +82,7 @@ interface Window {
       jobId?: string;
     }) => Promise<{
       success: boolean;
+      canceled?: boolean;
       error?: string;
       warnings?: string[];
       settings?: {
@@ -126,6 +132,21 @@ interface Window {
       theme: 'dark' | 'light';
     }) => Promise<{
       success: boolean;
+      error?: string;
+    }>;
+
+    openExternalLink: (opts: {
+      url: string;
+    }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+
+    cancelJob: (opts: {
+      jobId: string;
+    }) => Promise<{
+      success: boolean;
+      canceled?: boolean;
       error?: string;
     }>;
 

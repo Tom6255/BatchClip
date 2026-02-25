@@ -1,6 +1,7 @@
+import { v4 as uuidv4 } from 'uuid';
 import { useCallback, useState, type ChangeEvent, type Dispatch, type SetStateAction } from 'react';
 import { getFileNameFromPath, isSupportedVideoFile } from '../../../lib/video';
-import type { ExportProgressController, TranslateFn } from '../types';
+import type { ExportProgressController, QuickLutBatchVideoItem, TranslateFn } from '../types';
 
 interface UseQuickSplitBySizeParams {
   t: TranslateFn;
@@ -11,10 +12,10 @@ interface UseQuickSplitBySizeParams {
 interface UseQuickSplitBySizeResult {
   quickSplitTargetSizeMb: number;
   setQuickSplitTargetSizeMb: Dispatch<SetStateAction<number>>;
-  quickSplitSourcePath: string;
-  quickSplitSourceName: string;
-  quickSplitSourceSizeBytes: number | null;
+  quickSplitSourceVideos: QuickLutBatchVideoItem[];
   handleQuickSplitSourceChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  clearQuickSplitSources: () => void;
+  removeQuickSplitSource: (videoId: string) => void;
   runQuickSplitBySize: () => Promise<void>;
 }
 
@@ -26,37 +27,66 @@ export const useQuickSplitBySize = ({
   defaultTargetSizeMb
 }: UseQuickSplitBySizeParams): UseQuickSplitBySizeResult => {
   const [quickSplitTargetSizeMb, setQuickSplitTargetSizeMb] = useState(defaultTargetSizeMb);
-  const [quickSplitSourcePath, setQuickSplitSourcePath] = useState('');
-  const [quickSplitSourceName, setQuickSplitSourceName] = useState('');
-  const [quickSplitSourceSizeBytes, setQuickSplitSourceSizeBytes] = useState<number | null>(null);
+  const [quickSplitSourceVideos, setQuickSplitSourceVideos] = useState<QuickLutBatchVideoItem[]>([]);
 
   const handleQuickSplitSourceChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = event.target.files?.[0];
+    const selectedFiles = event.target.files ? Array.from(event.target.files) : [];
     event.target.value = '';
 
-    if (!selectedFile) {
+    if (selectedFiles.length === 0) {
       return;
     }
 
-    if (!isSupportedVideoFile(selectedFile)) {
+    const validFiles = selectedFiles.filter((file) => isSupportedVideoFile(file));
+    if (validFiles.length === 0) {
       alert(t('uploadVideoAlert'));
       return;
     }
 
-    const sourcePath = (selectedFile as File & { path?: string }).path ?? '';
-    if (!sourcePath) {
-      alert(t('pathError'));
-      return;
-    }
+    let missingPathCount = 0;
+    setQuickSplitSourceVideos((prev) => {
+      const existingPathSet = new Set(prev.map((item) => item.filePath));
+      const nextItems = [...prev];
 
-    setQuickSplitSourcePath(sourcePath);
-    setQuickSplitSourceName(getFileNameFromPath(sourcePath));
-    setQuickSplitSourceSizeBytes(selectedFile.size);
+      for (const file of validFiles) {
+        const sourcePath = (file as File & { path?: string }).path ?? '';
+        if (!sourcePath) {
+          missingPathCount += 1;
+          continue;
+        }
+
+        if (existingPathSet.has(sourcePath)) {
+          continue;
+        }
+
+        existingPathSet.add(sourcePath);
+        nextItems.push({
+          id: uuidv4(),
+          filePath: sourcePath,
+          displayName: getFileNameFromPath(sourcePath),
+          sizeBytes: file.size
+        });
+      }
+
+      return nextItems;
+    });
+
+    if (missingPathCount > 0) {
+      alert(t('pathError'));
+    }
   }, [t]);
+
+  const clearQuickSplitSources = useCallback(() => {
+    setQuickSplitSourceVideos([]);
+  }, []);
+
+  const removeQuickSplitSource = useCallback((videoId: string) => {
+    setQuickSplitSourceVideos((prev) => prev.filter((item) => item.id !== videoId));
+  }, []);
 
   const runQuickSplitBySize = useCallback(async () => {
     try {
-      if (!quickSplitSourcePath) {
+      if (quickSplitSourceVideos.length === 0) {
         alert(t('quickSplitNeedSource'));
         return;
       }
@@ -78,28 +108,76 @@ export const useQuickSplitBySize = ({
       exportController.activeExportContextRef.current = null;
       exportController.setExportMode('split');
       exportController.setExportProgressPercent(0);
-      exportController.setExportProgressClip({ current: 0, total: 0 });
+      exportController.setExportProgressClip({ current: 0, total: quickSplitSourceVideos.length });
       exportController.setIsExporting(true);
       let splitCompleted = false;
+      let splitCanceled = false;
+      let totalSuccessCount = 0;
+      const failedVideoDetails: Array<{ name: string; reason: string }> = [];
 
       try {
-        const result = await window.ipcRenderer.processSizeSplit({
-          filePath: quickSplitSourcePath,
-          outputDir,
-          targetSizeMb: normalizedTargetSizeMb,
-          jobId
-        });
+        for (let index = 0; index < quickSplitSourceVideos.length; index += 1) {
+          const videoItem = quickSplitSourceVideos[index];
+          exportController.activeExportContextRef.current = {
+            clipOffset: index,
+            clipCount: 1,
+            totalClips: quickSplitSourceVideos.length
+          };
 
-        splitCompleted = true;
-        const successCount = result.results.filter((item) => item.success).length;
-        if (!result.success || successCount === 0 || successCount !== result.results.length) {
-          if (result.error) {
-            alert(t('quickSplitFailed') + result.error);
-          } else {
-            alert(t('exportFailed'));
+          const result = await window.ipcRenderer.processSizeSplit({
+            filePath: videoItem.filePath,
+            outputDir,
+            targetSizeMb: normalizedTargetSizeMb,
+            jobId
+          });
+          if (result.canceled) {
+            splitCanceled = true;
+            break;
           }
+
+          const successCount = result.results.filter((item) => item.success).length;
+          totalSuccessCount += successCount;
+
+          if (!result.success || successCount === 0 || successCount !== result.results.length) {
+            const firstItemError = result.results.find((item) => !item.success && item.error)?.error;
+            const fallbackReason = t('exportFailed');
+            const rawReason = typeof result.error === 'string' && result.error.trim().length > 0
+              ? result.error
+              : (typeof firstItemError === 'string' && firstItemError.trim().length > 0 ? firstItemError : fallbackReason);
+            const normalizedReason = rawReason.replace(/\s+/g, ' ').trim();
+
+            failedVideoDetails.push({
+              name: videoItem.displayName,
+              reason: normalizedReason
+            });
+          }
+        }
+
+        if (splitCanceled) {
+          alert(t('exportCanceled'));
+        } else if (failedVideoDetails.length > 0) {
+          splitCompleted = true;
+          const failedList = failedVideoDetails.slice(0, 3).map((item) => item.name).join(', ');
+          const failedSuffix = failedVideoDetails.length > 3 ? '...' : '';
+          const summary = t('quickSplitBatchPartialFailed', {
+            failed: failedVideoDetails.length,
+            total: quickSplitSourceVideos.length,
+            names: `${failedList}${failedSuffix}`
+          });
+          const detailPreviewLimit = 8;
+          const detailLines = failedVideoDetails
+            .slice(0, detailPreviewLimit)
+            .map((item) => `- ${item.name}: ${item.reason}`)
+            .join('\n');
+          const hiddenCount = failedVideoDetails.length - detailPreviewLimit;
+          const moreLine = hiddenCount > 0 ? `\n- ... (+${hiddenCount})` : '';
+          alert(`${summary}\n\n${detailLines}${moreLine}`);
+        } else if (totalSuccessCount <= 0) {
+          splitCompleted = true;
+          alert(t('quickSplitFailed') + t('exportFailed'));
         } else {
-          alert(t('quickSplitSuccess', { count: successCount }));
+          splitCompleted = true;
+          alert(t('quickSplitSuccess', { count: totalSuccessCount }));
         }
       } finally {
         exportController.setIsExporting(false);
@@ -133,15 +211,15 @@ export const useQuickSplitBySize = ({
       console.error('Size split export error:', error);
       alert(t('quickSplitFailed') + errorMessage);
     }
-  }, [exportController, quickSplitSourcePath, quickSplitTargetSizeMb, t]);
+  }, [exportController, quickSplitSourceVideos, quickSplitTargetSizeMb, t]);
 
   return {
     quickSplitTargetSizeMb,
     setQuickSplitTargetSizeMb,
-    quickSplitSourcePath,
-    quickSplitSourceName,
-    quickSplitSourceSizeBytes,
+    quickSplitSourceVideos,
     handleQuickSplitSourceChange,
+    clearQuickSplitSources,
+    removeQuickSplitSource,
     runQuickSplitBySize
   };
 };

@@ -219,6 +219,12 @@ function App() {
     setThemePreference(nextTheme);
   }, [setThemePreference]);
 
+  const openProjectGithub = useCallback(() => {
+    void window.ipcRenderer.openExternalLink({ url: 'https://github.com/Tom6255/BatchClip' }).catch((error: unknown) => {
+      console.warn('[BatchClip] Failed to open GitHub link:', error);
+    });
+  }, []);
+
   useEffect(() => {
     localStorage.setItem(TAG_LIBRARY_STORAGE_KEY, JSON.stringify(tagLibrary));
   }, [tagLibrary]);
@@ -241,6 +247,7 @@ function App() {
   const [isPreparingPreview, setIsPreparingPreview] = useState(false);
   const [previewProgressPercent, setPreviewProgressPercent] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isCancellingExport, setIsCancellingExport] = useState(false);
   const [exportMode, setExportMode] = useState<'clips' | 'full' | 'split' | 'convert'>('clips');
   const [exportProgressPercent, setExportProgressPercent] = useState<number | null>(null);
   const [exportProgressClip, setExportProgressClip] = useState<{ current: number; total: number } | null>(null);
@@ -639,6 +646,34 @@ function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!isExporting) {
+      setIsCancellingExport(false);
+    }
+  }, [isExporting]);
+
+  const cancelCurrentExport = useCallback(async () => {
+    if (!isExporting || isCancellingExport) {
+      return;
+    }
+
+    const activeJobId = activeExportJobIdRef.current;
+    if (!activeJobId) {
+      return;
+    }
+
+    setIsCancellingExport(true);
+    try {
+      const result = await window.ipcRenderer.cancelJob({ jobId: activeJobId });
+      if (!result.success || !result.canceled) {
+        setIsCancellingExport(false);
+      }
+    } catch (error) {
+      console.warn('[BatchClip] Failed to cancel export job:', error);
+      setIsCancellingExport(false);
+    }
+  }, [isCancellingExport, isExporting]);
+
   // EN: Shared progress controller for quick actions (split/LUT).
   // ZH: 快捷功能（分割/LUT）共用的导出进度控制器。
   const exportProgressController = useMemo<ExportProgressController>(() => ({
@@ -663,10 +698,10 @@ function App() {
   const {
     quickSplitTargetSizeMb,
     setQuickSplitTargetSizeMb,
-    quickSplitSourcePath,
-    quickSplitSourceName,
-    quickSplitSourceSizeBytes,
+    quickSplitSourceVideos,
     handleQuickSplitSourceChange,
+    clearQuickSplitSources,
+    removeQuickSplitSource,
     runQuickSplitBySize
   } = useQuickSplitBySize({
     t: tForFeatures,
@@ -1160,6 +1195,7 @@ function App() {
       setIsExporting(true);
       let exportedClipCount = 0;
       let anyExportFailed = false;
+      let exportCanceled = false;
       let clipOffset = 0;
       const queueToExport = videoQueue.filter((item) => item.segments.length > 0);
 
@@ -1192,6 +1228,10 @@ function App() {
             lutIntensity: shouldApplyLutOnExport ? normalizedLutIntensity : undefined,
             jobId
           });
+          if (res.canceled) {
+            exportCanceled = true;
+            break;
+          }
 
           if (!res.success) {
             anyExportFailed = true;
@@ -1208,7 +1248,9 @@ function App() {
           setExportProgressClip({ current: clipOffset, total: totalQueueClipCount });
         }
 
-        if (anyExportFailed) {
+        if (exportCanceled) {
+          alert(t('exportCanceled'));
+        } else if (anyExportFailed) {
           alert(t('exportFailed'));
         } else {
           alert(t('exportSuccess', { count: exportedClipCount }));
@@ -1218,15 +1260,20 @@ function App() {
         const finalJobId = activeExportJobIdRef.current;
         activeExportJobIdRef.current = null;
         activeExportContextRef.current = null;
-        setExportProgressPercent(100);
-        clearExportProgressTimer();
-        exportProgressHideTimerRef.current = window.setTimeout(() => {
-          if (!finalJobId || activeExportJobIdRef.current === null) {
-            setExportProgressPercent(null);
-            setExportProgressClip(null);
-          }
-          exportProgressHideTimerRef.current = null;
-        }, 400);
+        if (exportCanceled) {
+          setExportProgressPercent(null);
+          setExportProgressClip(null);
+        } else {
+          setExportProgressPercent(100);
+          clearExportProgressTimer();
+          exportProgressHideTimerRef.current = window.setTimeout(() => {
+            if (!finalJobId || activeExportJobIdRef.current === null) {
+              setExportProgressPercent(null);
+              setExportProgressClip(null);
+            }
+            exportProgressHideTimerRef.current = null;
+          }, 400);
+        }
       }
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1266,6 +1313,7 @@ function App() {
       setExportProgressClip({ current: 0, total: queueToExport.length });
       setIsExporting(true);
       let exportCompleted = false;
+      let exportCanceled = false;
 
       try {
         const res = await window.ipcRenderer.processLutFullBatch({
@@ -1279,6 +1327,12 @@ function App() {
           jobId
         });
 
+        if (res.canceled) {
+          exportCanceled = true;
+          alert(t('exportCanceled'));
+          return;
+        }
+
         const successCount = res.results.filter((result) => result.success).length;
         exportCompleted = true;
         if (!res.success || successCount !== res.results.length) {
@@ -1291,7 +1345,10 @@ function App() {
         if (activeExportJobIdRef.current === jobId) {
           activeExportJobIdRef.current = null;
           activeExportContextRef.current = null;
-          if (exportCompleted) {
+          if (exportCanceled) {
+            setExportProgressPercent(null);
+            setExportProgressClip(null);
+          } else if (exportCompleted) {
             setExportProgressPercent(100);
             clearExportProgressTimer();
             exportProgressHideTimerRef.current = window.setTimeout(() => {
@@ -1330,10 +1387,9 @@ function App() {
   const lutFileName = hasLutFile ? getFileNameFromPath(normalizedLutPath) : t('lutNotSelected');
   const previewLoadingText = t('preparingPreview');
   const queueVideoCountLabel = t('queueVideoCount', { count: videoQueue.length });
-  const quickSplitSourceDisplayName = quickSplitSourceName || t('quickSplitNoSource');
-  const quickSplitSourceSizeLabel = quickSplitSourceSizeBytes !== null
-    ? formatFileSize(quickSplitSourceSizeBytes)
-    : '--';
+  const quickSplitVideoCountLabel = t('quickSplitVideoCount', { count: quickSplitSourceVideos.length });
+  const quickSplitTotalSizeBytes = quickSplitSourceVideos.reduce((sum, item) => sum + item.sizeBytes, 0);
+  const quickSplitTotalSizeLabel = formatFileSize(quickSplitTotalSizeBytes);
   const quickLutBatchVideoCountLabel = t('quickLutBatchVideoCount', { count: quickLutBatchVideos.length });
   const quickLutBatchTotalSizeBytes = quickLutBatchVideos.reduce((sum, item) => sum + item.sizeBytes, 0);
   const quickLutBatchTotalSizeLabel = formatFileSize(quickLutBatchTotalSizeBytes);
@@ -1354,6 +1410,8 @@ function App() {
       : exportMode === 'convert'
         ? t('quickConverting')
       : t('exportingClips');
+  const cancelExportLabel = t('stopTask');
+  const cancelingExportLabel = t('stoppingTask');
 
   return (
     <div
@@ -1434,6 +1492,12 @@ function App() {
         exportProgressPercent={exportProgressPercent}
         exportProgressLabel={exportProgressLabel}
         exportProgressClip={exportProgressClip}
+        onCancelExport={() => {
+          void cancelCurrentExport();
+        }}
+        isCancellingExport={isCancellingExport}
+        cancelExportLabel={cancelExportLabel}
+        cancelingExportLabel={cancelingExportLabel}
       />
 
 
@@ -1484,10 +1548,12 @@ function App() {
             defaultSplitTargetSizeMb={DEFAULT_SPLIT_TARGET_SIZE_MB}
             minSplitTargetSizeMb={MIN_SPLIT_TARGET_SIZE_MB}
             maxSplitTargetSizeMb={MAX_SPLIT_TARGET_SIZE_MB}
-            quickSplitSourcePath={quickSplitSourcePath}
-            quickSplitSourceDisplayName={quickSplitSourceDisplayName}
-            quickSplitSourceSizeLabel={quickSplitSourceSizeLabel}
+            quickSplitSourceVideos={quickSplitSourceVideos}
+            quickSplitVideoCountLabel={quickSplitVideoCountLabel}
+            quickSplitTotalSizeLabel={quickSplitTotalSizeLabel}
             onQuickSplitSourceChange={handleQuickSplitSourceChange}
+            onClearQuickSplitSources={clearQuickSplitSources}
+            onRemoveQuickSplitSource={removeQuickSplitSource}
             onRunQuickSplit={() => {
               void runQuickSplitBySize();
             }}
@@ -1631,6 +1697,7 @@ function App() {
         themePreference={themePreference}
         resolvedTheme={resolvedTheme}
         onChangeThemePreference={changeThemePreference}
+        onOpenProjectGithub={openProjectGithub}
         appVersion={APP_VERSION}
       />
     </div>

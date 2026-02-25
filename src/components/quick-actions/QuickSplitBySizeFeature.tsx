@@ -1,16 +1,20 @@
 import type { Dispatch, SetStateAction, ChangeEvent } from 'react';
-import { ChevronDown, ChevronRight, Scissors, Upload } from 'lucide-react';
+import { ChevronDown, ChevronRight, Scissors, Trash2, Upload, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import Button from '../ui/Button';
+import type { QuickLutBatchVideoItem } from '../../features/quick-actions/types';
 
 type QuickSplitTextKey =
   | 'quickSplitButtonLabel'
   | 'quickSplitBySizeDesc'
   | 'quickSplitTargetSize'
   | 'quickSplitTargetHint'
-  | 'quickSplitSourceFile'
-  | 'quickSplitSourceSize'
+  | 'quickSplitVideosLabel'
+  | 'quickSplitVideoCount'
+  | 'quickSplitTotalSize'
   | 'quickSplitChooseSource'
+  | 'quickSplitClearVideos'
+  | 'quickSplitNoVideos'
   | 'quickSplitting'
   | 'quickSplitRun';
 
@@ -23,11 +27,13 @@ interface QuickSplitBySizeFeatureProps {
   defaultSplitTargetSizeMb: number;
   minSplitTargetSizeMb: number;
   maxSplitTargetSizeMb: number;
-  quickSplitSourcePath: string;
-  quickSplitSourceDisplayName: string;
-  quickSplitSourceSizeLabel: string;
+  quickSplitSourceVideos: QuickLutBatchVideoItem[];
+  quickSplitVideoCountLabel: string;
+  quickSplitTotalSizeLabel: string;
   videoFileAccept: string;
   onSourceChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onClearSources: () => void;
+  onRemoveSource: (videoId: string) => void;
   onRun: () => void;
   isExporting: boolean;
   exportMode: 'clips' | 'full' | 'split' | 'convert';
@@ -43,11 +49,13 @@ const QuickSplitBySizeFeature = ({
   defaultSplitTargetSizeMb,
   minSplitTargetSizeMb,
   maxSplitTargetSizeMb,
-  quickSplitSourcePath,
-  quickSplitSourceDisplayName,
-  quickSplitSourceSizeLabel,
+  quickSplitSourceVideos,
+  quickSplitVideoCountLabel,
+  quickSplitTotalSizeLabel,
   videoFileAccept,
   onSourceChange,
+  onClearSources,
+  onRemoveSource,
   onRun,
   isExporting,
   exportMode,
@@ -127,43 +135,74 @@ const QuickSplitBySizeFeature = ({
               <p className="text-[11px] text-zinc-500">{t('quickSplitTargetHint')}</p>
             </div>
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <label className="text-xs font-medium text-zinc-200">{t('quickSplitSourceFile')}</label>
-                <span
-                  className={cn(
-                    'max-w-[60%] truncate text-[11px] font-mono text-right',
-                    quickSplitSourcePath ? 'text-zinc-300' : 'text-zinc-500'
-                  )}
-                  title={quickSplitSourceDisplayName}
-                >
-                  {quickSplitSourceDisplayName}
-                </span>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5 flex items-center justify-between">
+                <span className="text-[11px] text-zinc-400">{t('quickSplitVideosLabel')}</span>
+                <span className="text-[11px] font-mono text-zinc-200">{quickSplitVideoCountLabel}</span>
               </div>
-              <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5">
-                <span className="text-[11px] text-zinc-400">{t('quickSplitSourceSize')}</span>
-                <span className="text-[11px] font-mono text-zinc-200">{quickSplitSourceSizeLabel}</span>
+              <div className="rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5 flex items-center justify-between">
+                <span className="text-[11px] text-zinc-400">{t('quickSplitTotalSize')}</span>
+                <span className="text-[11px] font-mono text-zinc-200">{quickSplitTotalSizeLabel}</span>
               </div>
+            </div>
 
+            <div className="space-y-2">
               <input
                 type="file"
                 className="hidden"
                 id="quick-split-file-upload"
+                multiple
                 accept={videoFileAccept}
                 onChange={onSourceChange}
               />
               <div className="flex items-center gap-2">
                 <Button
                   variant="secondary"
-                  className="h-9 px-3 text-xs shrink-0"
+                  className="h-9 px-3 text-xs"
                   onClick={() => document.getElementById('quick-split-file-upload')?.click()}
                 >
                   <Upload className="w-3.5 h-3.5" />
                   {t('quickSplitChooseSource')}
                 </Button>
                 <Button
+                  variant="ghost"
+                  className="h-9 px-3 text-xs text-zinc-500 hover:text-red-400"
+                  onClick={onClearSources}
+                  disabled={quickSplitSourceVideos.length === 0}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  {t('quickSplitClearVideos')}
+                </Button>
+              </div>
+
+              {quickSplitSourceVideos.length === 0 ? (
+                <p className="text-[11px] text-zinc-500">{t('quickSplitNoVideos')}</p>
+              ) : (
+                <div className="max-h-24 overflow-y-auto pr-1 space-y-1.5 custom-scrollbar">
+                  {quickSplitSourceVideos.map((videoItem) => (
+                    <div
+                      key={videoItem.id}
+                      className="rounded-md border border-white/10 bg-zinc-900/70 px-2 py-1.5 flex items-center justify-between gap-2"
+                    >
+                      <span className="text-[11px] text-zinc-200 truncate" title={videoItem.displayName}>
+                        {videoItem.displayName}
+                      </span>
+                      <button
+                        type="button"
+                        className="text-zinc-500 hover:text-red-400 transition-colors"
+                        onClick={() => onRemoveSource(videoItem.id)}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <Button
                   className="h-9 flex-1 text-sm"
-                  disabled={isExporting || !quickSplitSourcePath}
+                  disabled={isExporting || quickSplitSourceVideos.length === 0}
                   onClick={onRun}
                 >
                   <Scissors className="w-4 h-4" />

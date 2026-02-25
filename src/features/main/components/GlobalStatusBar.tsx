@@ -1,4 +1,4 @@
-import { Languages, Monitor, Moon, Sun } from 'lucide-react';
+import { Github, Languages, Monitor, Moon, Sun } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { Language, TranslationKey } from '../../../i18n/translations';
 import type { ResolvedTheme, ThemePreference } from '../hooks/useMainSettings';
@@ -10,6 +10,7 @@ interface GlobalStatusBarProps {
   themePreference: ThemePreference;
   resolvedTheme: ResolvedTheme;
   onChangeThemePreference: (nextTheme: ThemePreference) => void;
+  onOpenProjectGithub: () => void;
   appVersion: string;
 }
 
@@ -30,6 +31,7 @@ const GlobalStatusBar = ({
   themePreference,
   resolvedTheme,
   onChangeThemePreference,
+  onOpenProjectGithub,
   appVersion
 }: GlobalStatusBarProps) => {
   const languageLabel = language === 'zh' ? 'ZH' : 'EN';
@@ -47,6 +49,21 @@ const GlobalStatusBar = ({
         : 'bg-zinc-950/80 border-white/10'
     )}>
       <div className="min-w-0 flex items-center gap-2 overflow-x-auto no-drag">
+        <button
+          type="button"
+          className={cn(
+            'h-8 w-8 rounded-full border text-xs transition-all duration-200 flex items-center justify-center shrink-0',
+            isLight
+              ? 'border-slate-300 bg-white/85 hover:bg-white text-slate-700'
+              : 'border-white/10 bg-zinc-900/60 hover:bg-zinc-800/60 text-zinc-200'
+          )}
+          onClick={onOpenProjectGithub}
+          title="GitHub"
+          aria-label="Open BatchClip GitHub repository"
+        >
+          <Github className={cn('w-3.5 h-3.5', isLight ? 'text-slate-700' : 'text-zinc-100')} />
+        </button>
+
         <button
           type="button"
           className={cn(

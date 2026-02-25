@@ -1,4 +1,5 @@
 import { cn } from '../../../lib/utils';
+import Button from '../../../components/ui/Button';
 
 interface ProgressOverlaysProps {
   isPreparingPreview: boolean;
@@ -8,6 +9,10 @@ interface ProgressOverlaysProps {
   exportProgressPercent: number | null;
   exportProgressLabel: string;
   exportProgressClip: { current: number; total: number } | null;
+  onCancelExport?: () => void;
+  isCancellingExport?: boolean;
+  cancelExportLabel?: string;
+  cancelingExportLabel?: string;
 }
 
 // EN: Floating progress HUD for preview preparation and export.
@@ -19,7 +24,11 @@ const ProgressOverlays = ({
   isExporting,
   exportProgressPercent,
   exportProgressLabel,
-  exportProgressClip
+  exportProgressClip,
+  onCancelExport,
+  isCancellingExport = false,
+  cancelExportLabel,
+  cancelingExportLabel
 }: ProgressOverlaysProps) => {
   return (
     <>
@@ -55,6 +64,18 @@ const ProgressOverlays = ({
                   </span>
                 )}
                 <span className="font-mono text-emerald-300">{Math.round(exportProgressPercent)}%</span>
+                {onCancelExport && (
+                  <Button
+                    variant="danger"
+                    className="h-6 px-2 text-[10px] pointer-events-auto"
+                    onClick={onCancelExport}
+                    disabled={isCancellingExport}
+                  >
+                    {isCancellingExport
+                      ? (cancelingExportLabel ?? cancelExportLabel ?? 'Stopping...')
+                      : (cancelExportLabel ?? 'Stop')}
+                  </Button>
+                )}
               </div>
             </div>
             <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">

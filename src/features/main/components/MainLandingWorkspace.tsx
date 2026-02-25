@@ -51,10 +51,12 @@ interface MainLandingWorkspaceProps {
   defaultSplitTargetSizeMb: number;
   minSplitTargetSizeMb: number;
   maxSplitTargetSizeMb: number;
-  quickSplitSourcePath: string;
-  quickSplitSourceDisplayName: string;
-  quickSplitSourceSizeLabel: string;
+  quickSplitSourceVideos: QuickLutBatchVideoItem[];
+  quickSplitVideoCountLabel: string;
+  quickSplitTotalSizeLabel: string;
   onQuickSplitSourceChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onClearQuickSplitSources: () => void;
+  onRemoveQuickSplitSource: (videoId: string) => void;
   onRunQuickSplit: () => void;
   onToggleQuickLutBatchPanel: () => void;
   onToggleQuickLutRealtimePreview: () => void;
@@ -153,10 +155,12 @@ const MainLandingWorkspace = ({
   defaultSplitTargetSizeMb,
   minSplitTargetSizeMb,
   maxSplitTargetSizeMb,
-  quickSplitSourcePath,
-  quickSplitSourceDisplayName,
-  quickSplitSourceSizeLabel,
+  quickSplitSourceVideos,
+  quickSplitVideoCountLabel,
+  quickSplitTotalSizeLabel,
   onQuickSplitSourceChange,
+  onClearQuickSplitSources,
+  onRemoveQuickSplitSource,
   onRunQuickSplit,
   onToggleQuickLutBatchPanel,
   onToggleQuickLutRealtimePreview,
@@ -282,11 +286,13 @@ const MainLandingWorkspace = ({
             defaultSplitTargetSizeMb={defaultSplitTargetSizeMb}
             minSplitTargetSizeMb={minSplitTargetSizeMb}
             maxSplitTargetSizeMb={maxSplitTargetSizeMb}
-            quickSplitSourcePath={quickSplitSourcePath}
-            quickSplitSourceDisplayName={quickSplitSourceDisplayName}
-            quickSplitSourceSizeLabel={quickSplitSourceSizeLabel}
+            quickSplitSourceVideos={quickSplitSourceVideos}
+            quickSplitVideoCountLabel={quickSplitVideoCountLabel}
+            quickSplitTotalSizeLabel={quickSplitTotalSizeLabel}
             videoFileAccept={videoFileAccept}
             onSourceChange={onQuickSplitSourceChange}
+            onClearSources={onClearQuickSplitSources}
+            onRemoveSource={onRemoveQuickSplitSource}
             onRun={onRunQuickSplit}
             isExporting={isExporting}
             exportMode={exportMode}

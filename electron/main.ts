@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, nativeTheme } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, nativeTheme, shell } from 'electron'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -32,6 +32,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 let win: BrowserWindow | null
 const previewProxyPaths = new Set<string>()
 const probeInfoCache = new Map<string, ProbeCacheEntry>()
+const jobControllers = new Map<string, JobController>()
 
 type WindowTheme = 'dark' | 'light'
 
@@ -121,6 +122,12 @@ type ConvertEncoderConfig = {
   }) => string[]
 }
 
+type JobController = {
+  canceled: boolean
+  scopeDepth: number
+  activeCommands: Set<ffmpeg.FfmpegCommand>
+}
+
 const PREVIEW_COMMON_OUTPUT_OPTIONS = [
   '-map', '0:v:0',
   '-map', '0:a:0?',
@@ -159,6 +166,7 @@ const INVALID_FILENAME_CHARS = /[<>:"/\\|?*]/g
 const BYTES_PER_MEGABYTE = 1024 * 1024
 const MIN_SPLIT_CLIP_DURATION_SEC = 0.2
 const MAX_SPLIT_SEGMENTS = 10000
+const JOB_CANCELED_ERROR_MESSAGE = 'Job canceled by user'
 
 const EXPORT_WINDOWS_NVENC_ENCODER: ExportEncoderConfig = {
   name: 'h264_nvenc',
@@ -248,6 +256,123 @@ function getErrorMessage(error: unknown): string {
     return error.message
   }
   return String(error)
+}
+
+function getOrCreateJobController(jobId: string): JobController {
+  const existing = jobControllers.get(jobId)
+  if (existing) {
+    return existing
+  }
+
+  const created: JobController = {
+    canceled: false,
+    scopeDepth: 0,
+    activeCommands: new Set<ffmpeg.FfmpegCommand>()
+  }
+  jobControllers.set(jobId, created)
+  return created
+}
+
+function cleanupJobControllerIfIdle(jobId: string): void {
+  const controller = jobControllers.get(jobId)
+  if (!controller) {
+    return
+  }
+
+  if (controller.scopeDepth <= 0 && controller.activeCommands.size === 0) {
+    jobControllers.delete(jobId)
+  }
+}
+
+function beginJobScope(jobId: string | null): (() => void) | null {
+  if (!jobId) {
+    return null
+  }
+
+  const controller = getOrCreateJobController(jobId)
+  controller.scopeDepth += 1
+
+  return () => {
+    const current = jobControllers.get(jobId)
+    if (!current) {
+      return
+    }
+
+    current.scopeDepth = Math.max(0, current.scopeDepth - 1)
+    cleanupJobControllerIfIdle(jobId)
+  }
+}
+
+function registerJobCommand(jobId: string | null, command: ffmpeg.FfmpegCommand): () => void {
+  if (!jobId) {
+    return () => {}
+  }
+
+  const controller = getOrCreateJobController(jobId)
+  controller.activeCommands.add(command)
+
+  if (controller.canceled) {
+    try {
+      command.kill('SIGKILL')
+    } catch (error) {
+      console.warn(`[BatchClip] Failed to kill canceled job command: ${jobId}`, error)
+    }
+  }
+
+  return () => {
+    const current = jobControllers.get(jobId)
+    if (!current) {
+      return
+    }
+
+    current.activeCommands.delete(command)
+    cleanupJobControllerIfIdle(jobId)
+  }
+}
+
+function isJobMarkedCanceled(jobId: string | null): boolean {
+  if (!jobId) {
+    return false
+  }
+  return jobControllers.get(jobId)?.canceled ?? false
+}
+
+function createJobCanceledError(): Error {
+  const error = new Error(JOB_CANCELED_ERROR_MESSAGE)
+  error.name = 'BatchClipJobCanceledError'
+  return error
+}
+
+function isJobCanceledError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  return error.name === 'BatchClipJobCanceledError' || error.message === JOB_CANCELED_ERROR_MESSAGE
+}
+
+function throwIfJobCanceled(jobId: string | null): void {
+  if (isJobMarkedCanceled(jobId)) {
+    throw createJobCanceledError()
+  }
+}
+
+function cancelRunningJob(jobId: string): boolean {
+  const controller = jobControllers.get(jobId)
+  if (!controller) {
+    return false
+  }
+
+  controller.canceled = true
+  for (const command of controller.activeCommands) {
+    try {
+      command.kill('SIGKILL')
+    } catch (error) {
+      console.warn(`[BatchClip] Failed to kill command for canceled job: ${jobId}`, error)
+    }
+  }
+
+  return true
 }
 
 function normalizeTagLabel(value: unknown): string | null {
@@ -404,9 +529,39 @@ async function isRecoverableSizeSplitFfmpegFailure(options: {
   }
 }
 
-function runFfmpegCommand(command: ffmpeg.FfmpegCommand): Promise<void> {
+function runFfmpegCommand(command: ffmpeg.FfmpegCommand, options?: {
+  jobId?: string | null
+}): Promise<void> {
+  const jobId = options?.jobId ?? null
   return new Promise((resolve, reject) => {
-    command.on('end', () => resolve()).on('error', (err: Error) => reject(err)).run()
+    let settled = false
+    const unregisterCommand = registerJobCommand(jobId, command)
+    const settleOnce = (handler: () => void) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      unregisterCommand()
+      handler()
+    }
+
+    command
+      .on('end', () => settleOnce(resolve))
+      .on('error', (error: Error) => {
+        if (isJobMarkedCanceled(jobId)) {
+          settleOnce(() => reject(createJobCanceledError()))
+          return
+        }
+        settleOnce(() => reject(error))
+      })
+
+    try {
+      throwIfJobCanceled(jobId)
+      command.run()
+    } catch (error) {
+      settleOnce(() => reject(error instanceof Error ? error : new Error(String(error))))
+    }
   })
 }
 
@@ -993,9 +1148,10 @@ async function createPreviewProxy(filePath: string, options?: {
   durationSec?: number | null
   lutPath?: string | null
   lutIntensity?: number
+  jobId?: string | null
   onProgress?: (percent: number) => void
 }): Promise<string> {
-  const { durationSec = null, lutPath = null, lutIntensity = 100, onProgress } = options ?? {}
+  const { durationSec = null, lutPath = null, lutIntensity = 100, jobId = null, onProgress } = options ?? {}
   const previewDir = path.join(app.getPath('temp'), 'batchclip-preview')
   await fs.promises.mkdir(previewDir, { recursive: true })
 
@@ -1045,7 +1201,7 @@ async function createPreviewProxy(filePath: string, options?: {
       })
 
     try {
-      await runFfmpegCommand(command)
+      await runFfmpegCommand(command, { jobId })
       previewProxyPaths.add(proxyPath)
       return proxyPath
     } catch (error: unknown) {
@@ -1070,6 +1226,7 @@ async function exportSingleClip(options: {
   lutIntensity?: number
   sourceVideoBitRateKbps?: number | null
   sourceAudioBitRateKbps?: number | null
+  jobId?: string | null
   onProgress?: (percent: number) => void
 }): Promise<void> {
   const {
@@ -1081,41 +1238,39 @@ async function exportSingleClip(options: {
     lutIntensity = 100,
     sourceVideoBitRateKbps = null,
     sourceAudioBitRateKbps = null,
+    jobId = null,
     onProgress
   } = options
 
   const shouldApplyLut = Boolean(lutPath)
   if (!shouldApplyLut) {
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg(filePath)
-        .setStartTime(startSec)
-        .setDuration(durationSec)
-        .output(outputPath)
-        .outputOptions([
-          '-map', '0:v:0',
-          '-map', '0:a:0?',
-          '-c:v', 'copy',
-          '-c:a', 'copy',
-          '-dn',
-          '-avoid_negative_ts', 'make_zero'
-        ])
-        .on('progress', (progress) => {
-          let segmentPercent = typeof progress.percent === 'number' ? progress.percent : null
-          if ((segmentPercent === null || !Number.isFinite(segmentPercent)) && durationSec > 0) {
-            const processedSeconds = parseTimemarkToSeconds(progress.timemark)
-            if (processedSeconds !== null) {
-              segmentPercent = (processedSeconds / durationSec) * 100
-            }
+    const command = ffmpeg(filePath)
+      .setStartTime(startSec)
+      .setDuration(durationSec)
+      .output(outputPath)
+      .outputOptions([
+        '-map', '0:v:0',
+        '-map', '0:a:0?',
+        '-c:v', 'copy',
+        '-c:a', 'copy',
+        '-dn',
+        '-avoid_negative_ts', 'make_zero'
+      ])
+      .on('progress', (progress) => {
+        let segmentPercent = typeof progress.percent === 'number' ? progress.percent : null
+        if ((segmentPercent === null || !Number.isFinite(segmentPercent)) && durationSec > 0) {
+          const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+          if (processedSeconds !== null) {
+            segmentPercent = (processedSeconds / durationSec) * 100
           }
+        }
 
-          if (segmentPercent !== null && Number.isFinite(segmentPercent)) {
-            onProgress?.(Math.min(100, Math.max(0, segmentPercent)))
-          }
-        })
-        .on('end', () => resolve())
-        .on('error', (err) => reject(err))
-        .run()
-    })
+        if (segmentPercent !== null && Number.isFinite(segmentPercent)) {
+          onProgress?.(Math.min(100, Math.max(0, segmentPercent)))
+        }
+      })
+
+    await runFfmpegCommand(command, { jobId })
     return
   }
 
@@ -1132,7 +1287,7 @@ async function exportSingleClip(options: {
       sourceVideoBitRateKbps
     })
 
-    const runEncodedClip = (audioMode: 'copy' | 'aac') => new Promise<void>((resolve, reject) => {
+    const runEncodedClip = async (audioMode: 'copy' | 'aac') => {
       const command = ffmpeg(filePath)
         .setStartTime(startSec)
         .setDuration(durationSec)
@@ -1152,8 +1307,6 @@ async function exportSingleClip(options: {
             onProgress?.(Math.min(100, Math.max(0, segmentPercent)))
           }
         })
-        .on('end', () => resolve())
-        .on('error', (err) => reject(err))
 
       if (audioMode === 'copy') {
         command.audioCodec('copy')
@@ -1162,8 +1315,8 @@ async function exportSingleClip(options: {
         command.audioBitrate(`${fallbackAudioBitrateKbps}k`)
       }
 
-      command.run()
-    })
+      await runFfmpegCommand(command, { jobId })
+    }
 
     try {
       await runEncodedClip('copy')
@@ -1206,6 +1359,7 @@ async function exportSingleFullVideo(options: {
   sourceVideoBitRateKbps?: number | null
   sourceAudioBitRateKbps?: number | null
   durationSec?: number | null
+  jobId?: string | null
   onProgress?: (percent: number) => void
 }): Promise<void> {
   const {
@@ -1216,6 +1370,7 @@ async function exportSingleFullVideo(options: {
     sourceVideoBitRateKbps = null,
     sourceAudioBitRateKbps = null,
     durationSec = null,
+    jobId = null,
     onProgress
   } = options
 
@@ -1232,7 +1387,7 @@ async function exportSingleFullVideo(options: {
       sourceVideoBitRateKbps
     })
 
-    const runEncodedFullVideo = (audioMode: 'copy' | 'aac') => new Promise<void>((resolve, reject) => {
+    const runEncodedFullVideo = async (audioMode: 'copy' | 'aac') => {
       const command = ffmpeg(filePath)
         .output(outputPath)
         .videoCodec(encoder.videoCodec)
@@ -1250,8 +1405,6 @@ async function exportSingleFullVideo(options: {
             onProgress?.(Math.min(100, Math.max(0, fullPercent)))
           }
         })
-        .on('end', () => resolve())
-        .on('error', (err) => reject(err))
 
       if (audioMode === 'copy') {
         command.audioCodec('copy')
@@ -1260,8 +1413,8 @@ async function exportSingleFullVideo(options: {
         command.audioBitrate(`${fallbackAudioBitrateKbps}k`)
       }
 
-      command.run()
-    })
+      await runFfmpegCommand(command, { jobId })
+    }
 
     try {
       await runEncodedFullVideo('copy')
@@ -1305,6 +1458,7 @@ async function exportSingleConvertedVideo(options: {
   crf: number
   performanceMode: ConvertPerformanceMode
   durationSec?: number | null
+  jobId?: string | null
   onProgress?: (percent: number) => void
 }): Promise<void> {
   const {
@@ -1316,6 +1470,7 @@ async function exportSingleConvertedVideo(options: {
     crf,
     performanceMode,
     durationSec = null,
+    jobId = null,
     onProgress
   } = options
 
@@ -1348,44 +1503,40 @@ async function exportSingleConvertedVideo(options: {
     }
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        const command = ffmpeg(filePath)
-          .output(outputPath)
-          .format(muxerFormat)
-          .videoCodec(encoder.videoCodec)
-          .outputOptions(outputOptions)
-          .on('progress', (progress) => {
-            let percent = typeof progress.percent === 'number' ? progress.percent : null
-            if ((percent === null || !Number.isFinite(percent)) && durationSec && durationSec > 0) {
-              const processedSeconds = parseTimemarkToSeconds(progress.timemark)
-              if (processedSeconds !== null) {
-                percent = (processedSeconds / durationSec) * 100
-              }
+      const command = ffmpeg(filePath)
+        .output(outputPath)
+        .format(muxerFormat)
+        .videoCodec(encoder.videoCodec)
+        .outputOptions(outputOptions)
+        .on('progress', (progress) => {
+          let percent = typeof progress.percent === 'number' ? progress.percent : null
+          if ((percent === null || !Number.isFinite(percent)) && durationSec && durationSec > 0) {
+            const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+            if (processedSeconds !== null) {
+              percent = (processedSeconds / durationSec) * 100
             }
+          }
 
-            if (percent !== null && Number.isFinite(percent)) {
-              onProgress?.(Math.min(100, Math.max(0, percent)))
-            }
-          })
-          .on('end', () => resolve())
-          .on('error', (error) => reject(error))
+          if (percent !== null && Number.isFinite(percent)) {
+            onProgress?.(Math.min(100, Math.max(0, percent)))
+          }
+        })
 
-        if (encoder.inputOptions && encoder.inputOptions.length > 0) {
-          command.inputOptions(encoder.inputOptions)
-        }
+      if (encoder.inputOptions && encoder.inputOptions.length > 0) {
+        command.inputOptions(encoder.inputOptions)
+      }
 
-        if (audioCodec === 'copy') {
-          command.audioCodec('copy')
-        } else if (audioCodec === 'opus') {
-          command.audioCodec('libopus')
-          command.audioBitrate('160k')
-        } else {
-          command.audioCodec('aac')
-          command.audioBitrate('160k')
-        }
+      if (audioCodec === 'copy') {
+        command.audioCodec('copy')
+      } else if (audioCodec === 'opus') {
+        command.audioCodec('libopus')
+        command.audioBitrate('160k')
+      } else {
+        command.audioCodec('aac')
+        command.audioBitrate('160k')
+      }
 
-        command.run()
-      })
+      await runFfmpegCommand(command, { jobId })
 
       return
     } catch (error: unknown) {
@@ -1415,6 +1566,7 @@ async function exportSingleSizeSplitClip(options: {
   startSec: number
   targetSizeBytes: number
   estimatedDurationSec?: number
+  jobId?: string | null
   onProgress?: (processedSeconds: number) => void
 }): Promise<void> {
   const {
@@ -1423,20 +1575,12 @@ async function exportSingleSizeSplitClip(options: {
     startSec,
     targetSizeBytes,
     estimatedDurationSec = 0,
+    jobId = null,
     onProgress
   } = options
 
   await new Promise<void>((resolve, reject) => {
-    let settled = false
-    const settleOnce = (handler: () => void) => {
-      if (settled) {
-        return
-      }
-      settled = true
-      handler()
-    }
-
-    ffmpeg(filePath)
+    const command = ffmpeg(filePath)
       .setStartTime(Math.max(0, startSec))
       .output(outputPath)
       .outputOptions([
@@ -1447,6 +1591,19 @@ async function exportSingleSizeSplitClip(options: {
         '-avoid_negative_ts', 'make_zero',
         '-fs', `${Math.max(1, Math.floor(targetSizeBytes))}`
       ])
+
+    const unregisterCommand = registerJobCommand(jobId, command)
+    let settled = false
+    const settleOnce = (handler: () => void) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      unregisterCommand()
+      handler()
+    }
+
+    command
       .on('progress', (progress) => {
         const processedSeconds = parseTimemarkToSeconds(progress.timemark)
         if (processedSeconds !== null) {
@@ -1461,6 +1618,11 @@ async function exportSingleSizeSplitClip(options: {
       })
       .on('end', () => settleOnce(resolve))
       .on('error', (error, _stdout, stderr) => {
+        if (isJobMarkedCanceled(jobId)) {
+          settleOnce(() => reject(createJobCanceledError()))
+          return
+        }
+
         void (async () => {
           const recoverable = await isRecoverableSizeSplitFfmpegFailure({
             outputPath,
@@ -1478,7 +1640,13 @@ async function exportSingleSizeSplitClip(options: {
           settleOnce(() => reject(innerError))
         })
       })
-      .run()
+
+    try {
+      throwIfJobCanceled(jobId)
+      command.run()
+    } catch (error) {
+      settleOnce(() => reject(error instanceof Error ? error : new Error(String(error))))
+    }
   })
 }
 
@@ -1641,6 +1809,38 @@ ipcMain.handle('set-window-theme', (_event, payload: unknown) => {
   return { success: true }
 })
 
+ipcMain.handle('open-external-link', async (_event, payload: unknown) => {
+  if (!payload || typeof payload !== 'object') {
+    return { success: false, error: 'Invalid payload' }
+  }
+
+  const data = payload as { url?: unknown }
+  if (typeof data.url !== 'string' || data.url.length === 0) {
+    return { success: false, error: 'Invalid url' }
+  }
+
+  try {
+    await shell.openExternal(data.url)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: getErrorMessage(error) }
+  }
+})
+
+ipcMain.handle('cancel-job', (_event, payload: unknown) => {
+  if (!payload || typeof payload !== 'object') {
+    return { success: false, canceled: false, error: 'Invalid payload' }
+  }
+
+  const data = payload as { jobId?: unknown }
+  if (typeof data.jobId !== 'string' || data.jobId.length === 0) {
+    return { success: false, canceled: false, error: 'Invalid jobId' }
+  }
+
+  const canceled = cancelRunningJob(data.jobId)
+  return { success: true, canceled }
+})
+
 
 ipcMain.handle('show-save-dialog', async () => {
   if (!win) return null;
@@ -1745,6 +1945,7 @@ ipcMain.handle('prepare-preview', async (event, { filePath, forceProxy = false, 
       durationSec: probeInfo.durationSec,
       lutPath: resolvedLutPath,
       lutIntensity: resolvedLutIntensity,
+      jobId: progressJobId,
       onProgress: (percent) => emitProgress('progress', percent)
     })
     emitProgress('done', 100)
@@ -1797,6 +1998,7 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
   const results: Array<{ id: string; success: boolean; path?: string; error?: string }> = []
 
   const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+  const releaseJobScope = beginJobScope(progressJobId)
   let lastReportedProgress = -1
   const emitExportProgress = (phase: 'start' | 'progress' | 'done', percent: number, currentClip = 0, totalClips = 0) => {
     if (!progressJobId) return
@@ -1821,6 +2023,7 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
   }
 
   try {
+    throwIfJobCanceled(progressJobId)
     await fs.promises.mkdir(outputDir, { recursive: true })
     const sourceStat = await fs.promises.stat(filePath)
     if (!sourceStat.isFile() || sourceStat.size <= 0) {
@@ -1850,6 +2053,8 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
     let clipIndex = 1
 
     while (startSec < totalDurationSec - 0.01) {
+      throwIfJobCanceled(progressJobId)
+
       if (clipIndex > MAX_SPLIT_SEGMENTS) {
         throw new Error('Segment count exceeded safe limit')
       }
@@ -1872,6 +2077,7 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
         startSec: clipStartSec,
         targetSizeBytes,
         estimatedDurationSec: safeEstimatedClipDurationSec,
+        jobId: progressJobId,
         onProgress: reportSplitProgress
       })
 
@@ -1917,14 +2123,24 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
     emitExportProgress('done', 100, finalClipCount, finalClipCount)
     return { success: true, results }
   } catch (error: unknown) {
+    if (isJobCanceledError(error) || isJobMarkedCanceled(progressJobId)) {
+      const canceledPercent = lastReportedProgress >= 0 ? lastReportedProgress : 0
+      emitExportProgress('done', canceledPercent, results.length, Math.max(results.length, 1))
+      return { success: false, canceled: true, error: JOB_CANCELED_ERROR_MESSAGE, results }
+    }
+
     const errorMessage = getErrorMessage(error)
     console.error('Size split failed:', error)
     emitExportProgress('done', 100, results.length, Math.max(results.length, 1))
     return { success: false, error: errorMessage, results }
+  } finally {
+    releaseJobScope?.()
   }
 })
 
 ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, lutPath, lutIntensity, jobId }) => {
+  const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+
   const normalizedSegments: BatchSegmentInput[] = Array.isArray(segments)
     ? segments.reduce<BatchSegmentInput[]>((acc, segment) => {
         if (!segment || typeof segment !== 'object') {
@@ -1962,7 +2178,7 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
   const results: Array<{ id: string; success: boolean; path?: string; error?: string }> = []
   console.log(`Batch processing ${totalSegments} clips from: ${filePath} (mode: ${shouldApplyLut ? `LUT ${path.basename(resolvedLutPath!)} @ ${resolvedLutIntensity}%` : 'stream-copy'})`)
 
-  const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+  const releaseJobScope = beginJobScope(progressJobId)
   let lastReportedProgress = -1
   const emitExportProgress = (phase: 'start' | 'progress' | 'done', percent: number, currentClip = 0, totalClips = totalSegments) => {
     if (!progressJobId) return
@@ -1985,64 +2201,88 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
     })
   }
 
-  emitExportProgress('start', 0, 0, totalSegments)
+  try {
+    throwIfJobCanceled(progressJobId)
+    emitExportProgress('start', 0, 0, totalSegments)
 
-  // Ensure output dir exists
-  await fs.promises.mkdir(outputDir, { recursive: true })
+    // Ensure output dir exists
+    await fs.promises.mkdir(outputDir, { recursive: true })
 
-  const baseName = path.basename(filePath, path.extname(filePath))
-  const outputExtension = shouldApplyLut
-    ? '.mov'
-    : resolveStreamCopyOutputExtension(filePath)
+    const baseName = path.basename(filePath, path.extname(filePath))
+    const outputExtension = shouldApplyLut
+      ? '.mov'
+      : resolveStreamCopyOutputExtension(filePath)
 
-  for (let i = 0; i < totalSegments; i++) {
-    const seg = normalizedSegments[i]
-    const duration = seg.end - seg.start
-    const clipIndex = i + 1
-    const segmentStartPercent = (i / Math.max(totalSegments, 1)) * 100
-    const segmentWeight = 100 / Math.max(totalSegments, 1)
-    const outName = `${buildClipOutputBaseName(baseName, clipIndex, normalizeSegmentTags(seg.tags))}${outputExtension}`
-    const tempVidPath = path.join(outputDir, outName)
+    for (let i = 0; i < totalSegments; i++) {
+      throwIfJobCanceled(progressJobId)
+      const seg = normalizedSegments[i]
+      const duration = seg.end - seg.start
+      const clipIndex = i + 1
+      const segmentStartPercent = (i / Math.max(totalSegments, 1)) * 100
+      const segmentWeight = 100 / Math.max(totalSegments, 1)
+      const outName = `${buildClipOutputBaseName(baseName, clipIndex, normalizeSegmentTags(seg.tags))}${outputExtension}`
+      const tempVidPath = path.join(outputDir, outName)
 
-    console.log(`Processing clip ${clipIndex}: ${seg.start}-${seg.end} -> ${outName}`)
-    emitExportProgress('progress', segmentStartPercent, clipIndex, totalSegments)
+      console.log(`Processing clip ${clipIndex}: ${seg.start}-${seg.end} -> ${outName}`)
+      emitExportProgress('progress', segmentStartPercent, clipIndex, totalSegments)
 
-    try {
-      let maxSegmentPercent = 0
-      const emitSegmentProgress = (segmentPercent: number) => {
-        maxSegmentPercent = Math.max(maxSegmentPercent, Math.min(100, Math.max(0, segmentPercent)))
-        const overallPercent = segmentStartPercent + (maxSegmentPercent / 100) * segmentWeight
-        emitExportProgress('progress', overallPercent, clipIndex, totalSegments)
+      try {
+        let maxSegmentPercent = 0
+        const emitSegmentProgress = (segmentPercent: number) => {
+          maxSegmentPercent = Math.max(maxSegmentPercent, Math.min(100, Math.max(0, segmentPercent)))
+          const overallPercent = segmentStartPercent + (maxSegmentPercent / 100) * segmentWeight
+          emitExportProgress('progress', overallPercent, clipIndex, totalSegments)
+        }
+
+        await exportSingleClip({
+          filePath,
+          startSec: seg.start,
+          durationSec: duration,
+          outputPath: tempVidPath,
+          lutPath: resolvedLutPath,
+          lutIntensity: resolvedLutIntensity,
+          sourceVideoBitRateKbps,
+          sourceAudioBitRateKbps,
+          jobId: progressJobId,
+          onProgress: emitSegmentProgress
+        })
+
+        emitExportProgress('progress', ((i + 1) / Math.max(totalSegments, 1)) * 100, clipIndex, totalSegments)
+        results.push({ id: seg.id, success: true, path: tempVidPath })
+      } catch (error: unknown) {
+        await removeFileIfExists(tempVidPath)
+        if (isJobCanceledError(error) || isJobMarkedCanceled(progressJobId)) {
+          const canceledPercent = lastReportedProgress >= 0 ? lastReportedProgress : Math.round(segmentStartPercent)
+          emitExportProgress('done', canceledPercent, i, totalSegments)
+          return { success: false, canceled: true, error: JOB_CANCELED_ERROR_MESSAGE, results }
+        }
+
+        const errorMessage = getErrorMessage(error)
+        console.error(`Error processing clip ${clipIndex}:`, error)
+        emitExportProgress('progress', ((i + 1) / Math.max(totalSegments, 1)) * 100, clipIndex, totalSegments)
+        results.push({ id: seg.id, success: false, error: errorMessage })
       }
-
-      await exportSingleClip({
-        filePath,
-        startSec: seg.start,
-        durationSec: duration,
-        outputPath: tempVidPath,
-        lutPath: resolvedLutPath,
-        lutIntensity: resolvedLutIntensity,
-        sourceVideoBitRateKbps,
-        sourceAudioBitRateKbps,
-        onProgress: emitSegmentProgress
-      })
-
-      emitExportProgress('progress', ((i + 1) / Math.max(totalSegments, 1)) * 100, clipIndex, totalSegments)
-      results.push({ id: seg.id, success: true, path: tempVidPath })
-    } catch (error: unknown) {
-      const errorMessage = getErrorMessage(error)
-      console.error(`Error processing clip ${clipIndex}:`, error)
-      await removeFileIfExists(tempVidPath)
-      emitExportProgress('progress', ((i + 1) / Math.max(totalSegments, 1)) * 100, clipIndex, totalSegments)
-      results.push({ id: seg.id, success: false, error: errorMessage })
     }
-  }
 
-  emitExportProgress('done', 100, totalSegments, totalSegments)
-  return { success: true, results }
+    emitExportProgress('done', 100, totalSegments, totalSegments)
+    return { success: true, results }
+  } catch (error: unknown) {
+    if (isJobCanceledError(error) || isJobMarkedCanceled(progressJobId)) {
+      const canceledPercent = lastReportedProgress >= 0 ? lastReportedProgress : 0
+      emitExportProgress('done', canceledPercent, results.length, Math.max(totalSegments, 1))
+      return { success: false, canceled: true, error: JOB_CANCELED_ERROR_MESSAGE, results }
+    }
+
+    emitExportProgress('done', 100, results.length, Math.max(totalSegments, 1))
+    return { success: false, error: getErrorMessage(error), results }
+  } finally {
+    releaseJobScope?.()
+  }
 })
 
 ipcMain.handle('process-lut-full-batch', async (event, { videos, outputDir, lutPath, lutIntensity, jobId }) => {
+  const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+
   const resolvedLutPath = await resolveLutPath(lutPath)
   if (!resolvedLutPath) {
     return { success: false, results: [] }
@@ -2061,7 +2301,7 @@ ipcMain.handle('process-lut-full-batch', async (event, { videos, outputDir, lutP
 
   const totalVideos = normalizedVideos.length
   const results: Array<{ id: string; success: boolean; path?: string; error?: string }> = []
-  const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+  const releaseJobScope = beginJobScope(progressJobId)
   let lastReportedProgress = -1
   const emitExportProgress = (phase: 'start' | 'progress' | 'done', percent: number, currentVideo = 0, total = totalVideos) => {
     if (!progressJobId) return
@@ -2085,54 +2325,76 @@ ipcMain.handle('process-lut-full-batch', async (event, { videos, outputDir, lutP
     })
   }
 
-  emitExportProgress('start', 0, 0, totalVideos)
-  await fs.promises.mkdir(outputDir, { recursive: true })
+  try {
+    throwIfJobCanceled(progressJobId)
+    emitExportProgress('start', 0, 0, totalVideos)
+    await fs.promises.mkdir(outputDir, { recursive: true })
 
-  for (let i = 0; i < normalizedVideos.length; i++) {
-    const entry = normalizedVideos[i]
-    const videoIndex = i + 1
-    const segmentStartPercent = (i / Math.max(totalVideos, 1)) * 100
-    const segmentWeight = 100 / Math.max(totalVideos, 1)
+    for (let i = 0; i < normalizedVideos.length; i++) {
+      throwIfJobCanceled(progressJobId)
+      const entry = normalizedVideos[i]
+      const videoIndex = i + 1
+      const segmentStartPercent = (i / Math.max(totalVideos, 1)) * 100
+      const segmentWeight = 100 / Math.max(totalVideos, 1)
 
-    try {
-      const {
-        info,
-        sourceVideoBitRateKbps,
-        sourceAudioBitRateKbps
-      } = await probeSourceInfoWithBitrates(entry.filePath)
-      const baseName = path.basename(entry.filePath, path.extname(entry.filePath))
-      const outputPath = await buildUniqueOutputPath(outputDir, `${baseName}_lut`, '.mov')
+      try {
+        const {
+          info,
+          sourceVideoBitRateKbps,
+          sourceAudioBitRateKbps
+        } = await probeSourceInfoWithBitrates(entry.filePath)
+        const baseName = path.basename(entry.filePath, path.extname(entry.filePath))
+        const outputPath = await buildUniqueOutputPath(outputDir, `${baseName}_lut`, '.mov')
 
-      let maxVideoPercent = 0
-      const emitVideoProgress = (videoPercent: number) => {
-        maxVideoPercent = Math.max(maxVideoPercent, Math.min(100, Math.max(0, videoPercent)))
-        const overallPercent = segmentStartPercent + (maxVideoPercent / 100) * segmentWeight
-        emitExportProgress('progress', overallPercent, videoIndex, totalVideos)
+        let maxVideoPercent = 0
+        const emitVideoProgress = (videoPercent: number) => {
+          maxVideoPercent = Math.max(maxVideoPercent, Math.min(100, Math.max(0, videoPercent)))
+          const overallPercent = segmentStartPercent + (maxVideoPercent / 100) * segmentWeight
+          emitExportProgress('progress', overallPercent, videoIndex, totalVideos)
+        }
+
+        await exportSingleFullVideo({
+          filePath: entry.filePath,
+          outputPath,
+          lutPath: resolvedLutPath,
+          lutIntensity: resolvedLutIntensity,
+          sourceVideoBitRateKbps,
+          sourceAudioBitRateKbps,
+          durationSec: info.durationSec,
+          jobId: progressJobId,
+          onProgress: emitVideoProgress
+        })
+
+        emitExportProgress('progress', ((i + 1) / Math.max(totalVideos, 1)) * 100, videoIndex, totalVideos)
+        results.push({ id: entry.id, success: true, path: outputPath })
+      } catch (error: unknown) {
+        if (isJobCanceledError(error) || isJobMarkedCanceled(progressJobId)) {
+          const canceledPercent = lastReportedProgress >= 0 ? lastReportedProgress : Math.round(segmentStartPercent)
+          emitExportProgress('done', canceledPercent, i, totalVideos)
+          return { success: false, canceled: true, error: JOB_CANCELED_ERROR_MESSAGE, results }
+        }
+
+        const errorMessage = getErrorMessage(error)
+        console.error(`Error full-exporting video ${videoIndex}:`, error)
+        emitExportProgress('progress', ((i + 1) / Math.max(totalVideos, 1)) * 100, videoIndex, totalVideos)
+        results.push({ id: entry.id, success: false, error: errorMessage })
       }
-
-      await exportSingleFullVideo({
-        filePath: entry.filePath,
-        outputPath,
-        lutPath: resolvedLutPath,
-        lutIntensity: resolvedLutIntensity,
-        sourceVideoBitRateKbps,
-        sourceAudioBitRateKbps,
-        durationSec: info.durationSec,
-        onProgress: emitVideoProgress
-      })
-
-      emitExportProgress('progress', ((i + 1) / Math.max(totalVideos, 1)) * 100, videoIndex, totalVideos)
-      results.push({ id: entry.id, success: true, path: outputPath })
-    } catch (error: unknown) {
-      const errorMessage = getErrorMessage(error)
-      console.error(`Error full-exporting video ${videoIndex}:`, error)
-      emitExportProgress('progress', ((i + 1) / Math.max(totalVideos, 1)) * 100, videoIndex, totalVideos)
-      results.push({ id: entry.id, success: false, error: errorMessage })
     }
-  }
 
-  emitExportProgress('done', 100, totalVideos, totalVideos)
-  return { success: true, results }
+    emitExportProgress('done', 100, totalVideos, totalVideos)
+    return { success: true, results }
+  } catch (error: unknown) {
+    if (isJobCanceledError(error) || isJobMarkedCanceled(progressJobId)) {
+      const canceledPercent = lastReportedProgress >= 0 ? lastReportedProgress : 0
+      emitExportProgress('done', canceledPercent, results.length, Math.max(totalVideos, 1))
+      return { success: false, canceled: true, error: JOB_CANCELED_ERROR_MESSAGE, results }
+    }
+
+    emitExportProgress('done', 100, results.length, Math.max(totalVideos, 1))
+    return { success: false, error: getErrorMessage(error), results }
+  } finally {
+    releaseJobScope?.()
+  }
 })
 
 ipcMain.handle('process-convert-batch', async (event, {
@@ -2184,6 +2446,7 @@ ipcMain.handle('process-convert-batch', async (event, {
   const totalVideos = normalizedVideos.length
   const results: Array<{ id: string; success: boolean; path?: string; error?: string }> = []
   const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+  const releaseJobScope = beginJobScope(progressJobId)
   let lastReportedProgress = -1
   const emitExportProgress = (phase: 'start' | 'progress' | 'done', percent: number, currentVideo = 0, total = totalVideos) => {
     if (!progressJobId) return
@@ -2208,10 +2471,12 @@ ipcMain.handle('process-convert-batch', async (event, {
   }
 
   try {
+    throwIfJobCanceled(progressJobId)
     await fs.promises.mkdir(outputDir, { recursive: true })
     emitExportProgress('start', 0, 0, totalVideos)
 
     for (let index = 0; index < normalizedVideos.length; index++) {
+      throwIfJobCanceled(progressJobId)
       const entry = normalizedVideos[index]
       const videoIndex = index + 1
       const segmentStartPercent = (index / Math.max(totalVideos, 1)) * 100
@@ -2244,12 +2509,32 @@ ipcMain.handle('process-convert-batch', async (event, {
           crf: normalizedCrf,
           performanceMode: normalizedPerformanceMode,
           durationSec,
+          jobId: progressJobId,
           onProgress: emitVideoProgress
         })
 
         emitExportProgress('progress', ((index + 1) / Math.max(totalVideos, 1)) * 100, videoIndex, totalVideos)
         results.push({ id: entry.id, success: true, path: outputPath })
       } catch (error: unknown) {
+        if (isJobCanceledError(error) || isJobMarkedCanceled(progressJobId)) {
+          const canceledPercent = lastReportedProgress >= 0 ? lastReportedProgress : Math.round(segmentStartPercent)
+          emitExportProgress('done', canceledPercent, index, totalVideos)
+          return {
+            success: false,
+            canceled: true,
+            error: JOB_CANCELED_ERROR_MESSAGE,
+            results,
+            warnings,
+            settings: {
+              format: normalizedFormat,
+              videoCodec: effectiveVideoCodec,
+              audioCodec: effectiveAudioCodec,
+              crf: normalizedCrf,
+              performanceMode: normalizedPerformanceMode
+            }
+          }
+        }
+
         const errorMessage = getErrorMessage(error)
         emitExportProgress('progress', ((index + 1) / Math.max(totalVideos, 1)) * 100, videoIndex, totalVideos)
         results.push({ id: entry.id, success: false, error: errorMessage })
@@ -2270,6 +2555,25 @@ ipcMain.handle('process-convert-batch', async (event, {
       }
     }
   } catch (error: unknown) {
+    if (isJobCanceledError(error) || isJobMarkedCanceled(progressJobId)) {
+      const canceledPercent = lastReportedProgress >= 0 ? lastReportedProgress : 0
+      emitExportProgress('done', canceledPercent, results.length, Math.max(results.length, 1))
+      return {
+        success: false,
+        canceled: true,
+        error: JOB_CANCELED_ERROR_MESSAGE,
+        results,
+        warnings,
+        settings: {
+          format: normalizedFormat,
+          videoCodec: effectiveVideoCodec,
+          audioCodec: effectiveAudioCodec,
+          crf: normalizedCrf,
+          performanceMode: normalizedPerformanceMode
+        }
+      }
+    }
+
     emitExportProgress('done', 100, results.length, Math.max(results.length, 1))
     return {
       success: false,
@@ -2284,5 +2588,7 @@ ipcMain.handle('process-convert-batch', async (event, {
         performanceMode: normalizedPerformanceMode
       }
     }
+  } finally {
+    releaseJobScope?.()
   }
 })

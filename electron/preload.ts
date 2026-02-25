@@ -75,6 +75,14 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     theme: 'dark' | 'light'
   }) => ipcRenderer.invoke('set-window-theme', opts),
 
+  openExternalLink: (opts: {
+    url: string
+  }) => ipcRenderer.invoke('open-external-link', opts),
+
+  cancelJob: (opts: {
+    jobId: string
+  }) => ipcRenderer.invoke('cancel-job', opts),
+
   showOpenDialog: () => ipcRenderer.invoke('show-open-dialog'),
   showOpenLutDialog: () => ipcRenderer.invoke('show-open-lut-dialog'),
   showSaveDialog: () => ipcRenderer.invoke('show-save-dialog')
