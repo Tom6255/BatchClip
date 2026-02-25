@@ -1,10 +1,12 @@
 # BatchClip
-
+# Video Clip Assistant
 [中文](./README.md) | [English](./README_EN.md)
 
-BatchClip is a desktop video batch-processing tool built with Electron + React + TypeScript, designed for efficient export workflows with multiple videos, multiple segments, and optional LUT. It supports precise editing in the main workspace and quick batch operations on the landing screen (Split / LUT / Convert).
+Ever struggled with files too large to upload or share? Overwhelmed by too much footage and unsure how to label and export? Come and try BatchClip!
 
-Current version: `v1.0.5`
+BatchClip is a desktop video batch-processing tool built with Electron + React + TypeScript, designed for efficient export workflows with multiple videos, multiple segments, and optional LUTs. It supports precise editing in the main workspace (including video segment labeling) and quick batch operations on the landing screen (Split / LUT / Convert).
+
+Current version: `v1.0.6`
 
 ![UI Screenshot](./docs/screenshot00.png)
 ![UI Screenshot](./docs/screenshot01.png)
@@ -185,3 +187,11 @@ docs/                         # Documentation assets (screenshots, etc.)
 ## License
 
 MIT
+
+## Support the Project
+
+Development takes real time and effort. If BatchClip is useful to you, consider buying me a coffee. Thank you for your support.
+
+You can sponsor via Alipay:
+
+![Alipay Donation QR](./docs/Ali_pay.PNG)

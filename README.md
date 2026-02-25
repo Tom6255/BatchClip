@@ -1,10 +1,13 @@
-# BatchClip
+# BatchClip 
+# 视频切片助手
 
 [中文](./README.md) | [English](./README_EN.md)
 
-BatchClip 是一个基于 Electron + React + TypeScript 的桌面视频批处理工具，面向“多视频、多片段、可选 LUT”的高效导出流程。支持主编辑工作区精细剪辑，也支持首屏快捷批处理（分割 / LUT / 转换）。
+是否遇到过文件太大无法上传或者分享？是否遇到素材太多不知道怎么标注与导出？快来试试BatchClip吧！
 
-当前版本：`v1.0.5`
+ BatchClip是一个基于 Electron + React + TypeScript 的桌面视频批处理工具，面向“多视频、多片段、可选 LUT”的高效导出流程。支持主编辑工作区精细剪辑（支持视频片段添加标签），也支持首屏快捷批处理（分割 / LUT / 转换）。
+
+当前版本：`v1.0.6`
 
 ![界面截图](./docs/screenshot00.png)
 ![界面截图](./docs/screenshot01.png)
@@ -185,3 +188,11 @@ docs/                         # 文档资源（截图等）
 ## License
 
 MIT
+
+## 赞助支持
+
+开发不易，如果 BatchClip 对你有帮助，欢迎请作者喝杯咖啡。感谢每一份支持与鼓励。
+
+可使用支付宝扫码赞助：
+
+![支付宝赞助码](./docs/Ali_pay.PNG)
