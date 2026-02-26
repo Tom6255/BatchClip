@@ -534,6 +534,7 @@ const QuickConvertBatchFeature = ({
                   <option value="hevc">H.265 / HEVC</option>
                   <option value="vp9">VP9</option>
                   <option value="av1">AV1</option>
+                  <option value="prores">Apple ProRes</option>
                 </select>
               </label>
 

@@ -10,7 +10,12 @@ import {
   type SetStateAction
 } from 'react';
 import { getFileNameFromPath, isSupportedVideoFile, toFileUrl } from '../../../lib/video';
-import type { ExportProgressController, QuickLutBatchVideoItem, TranslateFn } from '../types';
+import type {
+  DefaultExportPreference,
+  ExportProgressController,
+  QuickLutBatchVideoItem,
+  TranslateFn
+} from '../types';
 import type { VideoPlayerRef } from '../../../components/VideoPlayer';
 
 interface PreviewPrepareProgressPayload {
@@ -22,6 +27,7 @@ interface PreviewPrepareProgressPayload {
 interface UseQuickLutBatchParams {
   t: TranslateFn;
   isQuickLutBatchPanelOpen: boolean;
+  defaultExportPreference: DefaultExportPreference;
   exportController: ExportProgressController;
   cleanupPreviewProxy: (proxyPath: string | null) => Promise<void>;
   clampLutIntensity: (value: number) => number;
@@ -75,6 +81,7 @@ const isPreviewPrepareProgressPayload = (payload: unknown): payload is PreviewPr
 export const useQuickLutBatch = ({
   t,
   isQuickLutBatchPanelOpen,
+  defaultExportPreference,
   exportController,
   cleanupPreviewProxy,
   clampLutIntensity,
@@ -230,6 +237,7 @@ export const useQuickLutBatch = ({
           outputDir,
           lutPath: normalizedLutPath,
           lutIntensity: clampLutIntensity(quickLutBatchLutIntensity),
+          defaultExportPreference,
           jobId
         });
 
@@ -284,6 +292,7 @@ export const useQuickLutBatch = ({
     }
   }, [
     clampLutIntensity,
+    defaultExportPreference,
     exportController,
     quickLutBatchLutIntensity,
     quickLutBatchLutPath,

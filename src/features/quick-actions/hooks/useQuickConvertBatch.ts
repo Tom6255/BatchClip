@@ -65,7 +65,7 @@ const normalizeContainerFormat = (value: string): ConvertContainerFormat => {
 };
 
 const normalizeVideoCodec = (value: string): ConvertVideoCodecTarget => {
-  if (value === 'hevc' || value === 'vp9' || value === 'av1') {
+  if (value === 'hevc' || value === 'vp9' || value === 'av1' || value === 'prores') {
     return value;
   }
   return 'h264';

@@ -11,12 +11,15 @@ Current version: `v1.0.6`
 ![UI Screenshot](./docs/screenshot00.png)
 ![UI Screenshot](./docs/screenshot01.png)
 
-## Recent Updates (2026-02-24)
+## Recent Updates (2026-02-26)
 
 - Added global status bar interactions: switch `ZH/EN` and theme (Dark / Light / Follow System) directly from the bottom bar on the landing screen, with current version display.
 - Added a third quick action: batch video conversion (container format + video encoder + audio encoder + CRF).
 - Batch conversion now supports built-in presets (Maximum Compatibility / Visually Lossless Compression) and custom presets (save / rename / delete).
 - Added auto-compatibility correction for conversion tasks: incompatible format/encoder combinations are automatically adjusted to valid ones with a summary notice.
+- Added a status-bar "Default Export Format" dialog: switch between "Convert to target format" and "Keep source format" (default `MP4 + H.264`).
+- Default export format now applies to segment export and LUT export (including Quick LUT batch export). Quick Convert keeps its own independent parameters.
+- On macOS export paths, `-hwaccel videotoolbox` is now included to try hardware decode + hardware encode first, then fallback to software when needed.
 
 ## Feature Overview
 
@@ -27,7 +30,8 @@ Current version: `v1.0.6`
 - LUT preview and export: import `.cube` files, toggle LUT preview on/off, and adjust strength (0%-100%).
 - Batch segment export: export all segments in the queue with one click.
 - Full LUT export: apply LUT directly to all videos in the queue and export without segmenting.
-- Global status bar: quickly switch `ZH/EN`, theme preference (Dark / Light / Follow System), and view current version.
+- Global status bar: quickly switch `ZH/EN`, theme preference (Dark / Light / Follow System), default export format, and view current version.
+- Default export format: supports "Convert to target format" and "Keep source format". All exports except Quick Convert follow this default policy.
 
 ### Quick Actions (Landing Screen)
 - Auto split by target size:
@@ -57,11 +61,12 @@ Note: if an incompatible combination is selected, the app auto-corrects it to a 
 ## GPU and Fallback Strategy
 
 - On Windows, export first tries `h264_nvenc` / `h264_qsv` / `h264_amf`, then automatically falls back to `libx264` if needed.
-- On macOS, export first tries `h264_videotoolbox`, then automatically falls back to `libx264` if needed.
+- On macOS, export first tries `h264_videotoolbox` / `hevc_videotoolbox` / `av1_videotoolbox` with `-hwaccel videotoolbox`, then automatically falls back to software encoders.
 - Quick batch conversion supports automatic thread tuning and hardware-first encoding attempts based on the selected encoder, with seamless software fallback.
 - The preview pipeline includes a compatibility mode (auto or manual switching when needed) to improve playback usability across different source encodings.
 
 Note: seeing "GPU encoding failed, fallback applied" logs in development mode is expected behavior and does not affect successful final export.
+Additional note: on macOS, Electron rendering hardware acceleration is disabled by default for compatibility (set `BATCHCLIP_FORCE_HW_ACCEL=1` to re-enable). This does not block FFmpeg VideoToolbox export attempts.
 
 ## Install and Development
 
@@ -122,15 +127,19 @@ npm run build:all
    - Batch export segments or run full LUT export
    - Switch active videos from the video list for preview
    - Optionally set fixed segment duration in preferences: after pressing `I`, `O` can be auto-controlled for fast fixed-length clipping
-4. The bottom status bar lets you switch language and theme at any time; settings are persisted locally.
+4. The bottom status bar lets you switch language, theme, and default export format at any time; settings are persisted locally.
 
 ## Export Naming Rules
 
-- Main segment export: `<tag_prefix_><original_video_name>_clip_01.mov`
+- Main segment export: `<tag_prefix_><original_video_name>_clip_01.<export_ext>`
 - Quick split by size: `<original_video_name>_clip01.<source_ext>`
-- Full LUT export: `<original_video_name>_lut.mov`
+- Full LUT export: `<original_video_name>_lut.<export_ext>`
 - Quick batch conversion: `<original_video_name>_convert.<target_ext>`
 - Duplicate names are auto-suffixed to avoid overwriting.
+
+Notes:
+- `<export_ext>` is controlled by "Status Bar -> Default Export Format".
+- When "Keep source format" is selected and LUT is not enabled, segment export prefers the source extension (for example `.mp4/.mkv/.mov`).
 
 ## Project Structure (Current)
 
@@ -165,7 +174,10 @@ src/
         QueueModal.tsx
         ProgressOverlays.tsx
         GlobalStatusBar.tsx
+        ExportFormatSettingsModal.tsx
         LutFullExportConfirmModal.tsx
+      lib/
+        defaultExport.ts
 
     quick-actions/
       types.ts

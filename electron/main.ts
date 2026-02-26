@@ -89,12 +89,14 @@ type ProbeCacheEntry = {
 type PreviewEncoderConfig = {
   name: string
   videoCodec: string
+  inputOptions?: string[]
   outputOptions: string[]
 }
 
 type ExportEncoderConfig = {
   name: string
   videoCodec: string
+  inputOptions?: string[]
   outputOptions: string[]
 }
 
@@ -107,11 +109,27 @@ type BatchSegmentInput = {
 
 type ConvertContainerFormat = 'mp4' | 'mkv' | 'webm' | 'mov'
 
-type ConvertVideoCodecTarget = 'h264' | 'hevc' | 'vp9' | 'av1'
+type ConvertVideoCodecTarget = 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores'
 
 type ConvertAudioCodecTarget = 'aac' | 'opus' | 'copy'
 
 type ConvertPerformanceMode = 'auto' | 'cpu'
+
+type DefaultExportPreferenceMode = 'transcode' | 'source'
+
+type DefaultExportPreference = {
+  mode: DefaultExportPreferenceMode
+  format: ConvertContainerFormat
+  videoCodec: ConvertVideoCodecTarget
+}
+
+type ExportTranscodeSettings = {
+  format: ConvertContainerFormat
+  videoCodec: ConvertVideoCodecTarget
+  audioCodec: ConvertAudioCodecTarget
+  crf: number
+  performanceMode: ConvertPerformanceMode
+}
 
 type ConvertEncoderConfig = {
   name: string
@@ -159,6 +177,13 @@ const PREVIEW_WINDOWS_AMF_ENCODER: PreviewEncoderConfig = {
   outputOptions: ['-quality', 'speed', '-b:v', '2M', '-maxrate', '3M', '-bufsize', '6M']
 }
 
+const PREVIEW_DARWIN_VIDEOTOOLBOX_ENCODER: PreviewEncoderConfig = {
+  name: 'h264_videotoolbox',
+  videoCodec: 'h264_videotoolbox',
+  inputOptions: ['-hwaccel', 'videotoolbox'],
+  outputOptions: ['-allow_sw', '1', '-q:v', '55']
+}
+
 const EXPORT_PRIMARY_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET || 'medium'
 const EXPORT_FALLBACK_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET_FALLBACK || 'slow'
 const MAX_PROBE_CACHE_ENTRIES = 128
@@ -189,6 +214,7 @@ const EXPORT_WINDOWS_AMF_ENCODER: ExportEncoderConfig = {
 const EXPORT_DARWIN_VIDEOTOOLBOX_ENCODER: ExportEncoderConfig = {
   name: 'h264_videotoolbox',
   videoCodec: 'h264_videotoolbox',
+  inputOptions: ['-hwaccel', 'videotoolbox'],
   outputOptions: ['-allow_sw', '1']
 }
 
@@ -239,7 +265,7 @@ const CONVERT_FORMAT_ALLOWED_VIDEO_CODECS: Record<ConvertContainerFormat, Set<Co
   mp4: new Set<ConvertVideoCodecTarget>(['h264', 'hevc', 'av1']),
   mkv: new Set<ConvertVideoCodecTarget>(['h264', 'hevc', 'vp9', 'av1']),
   webm: new Set<ConvertVideoCodecTarget>(['vp9', 'av1']),
-  mov: new Set<ConvertVideoCodecTarget>(['h264', 'hevc'])
+  mov: new Set<ConvertVideoCodecTarget>(['h264', 'hevc', 'prores'])
 }
 
 const CONVERT_FORMAT_ALLOWED_AUDIO_CODECS: Record<ConvertContainerFormat, Set<ConvertAudioCodecTarget>> = {
@@ -250,6 +276,11 @@ const CONVERT_FORMAT_ALLOWED_AUDIO_CODECS: Record<ConvertContainerFormat, Set<Co
 }
 
 const unsupportedConvertEncoders = new Set<string>()
+const DEFAULT_EXPORT_PREFERENCE: DefaultExportPreference = {
+  mode: 'transcode',
+  format: 'mp4',
+  videoCodec: 'h264'
+}
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -847,7 +878,7 @@ function normalizeConvertFormat(value: unknown): ConvertContainerFormat {
 }
 
 function normalizeConvertVideoCodec(value: unknown): ConvertVideoCodecTarget {
-  if (value === 'hevc' || value === 'vp9' || value === 'av1') {
+  if (value === 'hevc' || value === 'vp9' || value === 'av1' || value === 'prores') {
     return value
   }
   return 'h264'
@@ -873,6 +904,98 @@ function normalizeConvertCrf(value: unknown): number {
     return DEFAULT_CONVERT_CRF
   }
   return Math.min(MAX_CONVERT_CRF, Math.max(MIN_CONVERT_CRF, Math.round(numeric)))
+}
+
+function normalizeDefaultExportMode(value: unknown): DefaultExportPreferenceMode {
+  if (value === 'source') {
+    return 'source'
+  }
+  return 'transcode'
+}
+
+function normalizeDefaultExportPreference(value: unknown): DefaultExportPreference {
+  if (!value || typeof value !== 'object') {
+    return { ...DEFAULT_EXPORT_PREFERENCE }
+  }
+
+  const candidate = value as Record<string, unknown>
+  const format = normalizeConvertFormat(candidate.format)
+  const videoCodec = ensureCompatibleConvertVideoCodec(format, normalizeConvertVideoCodec(candidate.videoCodec))
+
+  return {
+    mode: normalizeDefaultExportMode(candidate.mode),
+    format,
+    videoCodec
+  }
+}
+
+function resolveConvertFormatFromSourcePath(filePath: string): ConvertContainerFormat | null {
+  const ext = path.extname(filePath).toLowerCase()
+  if (ext === '.mp4') {
+    return 'mp4'
+  }
+  if (ext === '.mkv') {
+    return 'mkv'
+  }
+  if (ext === '.webm') {
+    return 'webm'
+  }
+  if (ext === '.mov') {
+    return 'mov'
+  }
+  return null
+}
+
+function inferConvertVideoCodecFromSourceCodec(codecName: string | undefined): ConvertVideoCodecTarget | null {
+  const normalized = (codecName ?? '').toLowerCase()
+  if (normalized === 'h264' || normalized === 'avc') {
+    return 'h264'
+  }
+  if (normalized === 'hevc' || normalized === 'h265') {
+    return 'hevc'
+  }
+  if (normalized === 'vp9') {
+    return 'vp9'
+  }
+  if (normalized === 'av1') {
+    return 'av1'
+  }
+  if (normalized === 'prores') {
+    return 'prores'
+  }
+  return null
+}
+
+function resolveExportTranscodeSettings(options: {
+  preference: DefaultExportPreference
+  filePath: string
+  shouldApplyLut: boolean
+  sourceInfo?: ProbeVideoInfo | null
+}): ExportTranscodeSettings | null {
+  const { preference, filePath, shouldApplyLut, sourceInfo = null } = options
+
+  if (preference.mode === 'source' && !shouldApplyLut) {
+    return null
+  }
+
+  const targetFormat = preference.mode === 'source'
+    ? (resolveConvertFormatFromSourcePath(filePath) ?? 'mp4')
+    : preference.format
+  const sourcePreferredCodec = inferConvertVideoCodecFromSourceCodec(sourceInfo?.stream?.codec_name)
+  const desiredVideoCodec = preference.mode === 'source'
+    ? (sourcePreferredCodec ?? CONVERT_FORMAT_DEFAULT_VIDEO_CODEC[targetFormat])
+    : preference.videoCodec
+  const desiredAudioCodec: ConvertAudioCodecTarget = preference.mode === 'source' && targetFormat === 'mkv'
+    ? 'copy'
+    : CONVERT_FORMAT_DEFAULT_AUDIO_CODEC[targetFormat]
+
+  return {
+    format: targetFormat,
+    videoCodec: ensureCompatibleConvertVideoCodec(targetFormat, desiredVideoCodec),
+    audioCodec: ensureCompatibleConvertAudioCodec(targetFormat, desiredAudioCodec),
+    crf: DEFAULT_CONVERT_CRF,
+    performanceMode: 'auto'
+  }
 }
 
 function resolveConvertThreadCount(): number {
@@ -1033,19 +1156,29 @@ function buildConvertEncoderAttempts(options: {
         pushEncoder({
           name: 'h264_videotoolbox',
           videoCodec: 'h264_videotoolbox',
+          inputOptions: ['-hwaccel', 'videotoolbox'],
           outputOptions: ({ crf }) => ['-allow_sw', '1', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
         })
       } else if (videoCodec === 'hevc') {
         pushEncoder({
           name: 'hevc_videotoolbox',
           videoCodec: 'hevc_videotoolbox',
+          inputOptions: ['-hwaccel', 'videotoolbox'],
           outputOptions: ({ crf }) => ['-allow_sw', '1', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
         })
       } else if (videoCodec === 'av1') {
         pushEncoder({
           name: 'av1_videotoolbox',
           videoCodec: 'av1_videotoolbox',
+          inputOptions: ['-hwaccel', 'videotoolbox'],
           outputOptions: ({ crf }) => ['-allow_sw', '1', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
+        })
+      } else if (videoCodec === 'prores') {
+        pushEncoder({
+          name: 'prores_videotoolbox',
+          videoCodec: 'prores_videotoolbox',
+          inputOptions: ['-hwaccel', 'videotoolbox'],
+          outputOptions: () => ['-allow_sw', '1', '-profile:v', '3']
         })
       }
     }
@@ -1098,6 +1231,12 @@ function buildConvertEncoderAttempts(options: {
       name: 'libaom-av1',
       videoCodec: 'libaom-av1',
       outputOptions: ({ crf }) => ['-crf', `${mapCrfToAv1Crf(crf)}`, '-b:v', '0', '-cpu-used', '4']
+    })
+  } else if (videoCodec === 'prores') {
+    pushEncoder({
+      name: 'prores_ks',
+      videoCodec: 'prores_ks',
+      outputOptions: () => ['-profile:v', '3', '-qscale:v', '9']
     })
   }
 
@@ -1165,7 +1304,9 @@ async function createPreviewProxy(filePath: string, options?: {
       PREVIEW_WINDOWS_AMF_ENCODER,
       PREVIEW_SOFTWARE_ENCODER
     ]
-    : [PREVIEW_SOFTWARE_ENCODER]
+    : process.platform === 'darwin'
+      ? [PREVIEW_DARWIN_VIDEOTOOLBOX_ENCODER, PREVIEW_SOFTWARE_ENCODER]
+      : [PREVIEW_SOFTWARE_ENCODER]
 
   let lastErrorMessage = 'Failed to build preview proxy'
 
@@ -1200,6 +1341,10 @@ async function createPreviewProxy(filePath: string, options?: {
         }
       })
 
+    if (encoder.inputOptions && encoder.inputOptions.length > 0) {
+      command.inputOptions(encoder.inputOptions)
+    }
+
     try {
       await runFfmpegCommand(command, { jobId })
       previewProxyPaths.add(proxyPath)
@@ -1222,6 +1367,7 @@ async function exportSingleClip(options: {
   startSec: number
   durationSec: number
   outputPath: string
+  transcodeSettings?: ExportTranscodeSettings | null
   lutPath?: string | null
   lutIntensity?: number
   sourceVideoBitRateKbps?: number | null
@@ -1234,6 +1380,7 @@ async function exportSingleClip(options: {
     startSec,
     durationSec,
     outputPath,
+    transcodeSettings = null,
     lutPath = null,
     lutIntensity = 100,
     sourceVideoBitRateKbps = null,
@@ -1243,6 +1390,27 @@ async function exportSingleClip(options: {
   } = options
 
   const shouldApplyLut = Boolean(lutPath)
+  if (transcodeSettings) {
+    await exportSingleConvertedVideo({
+      filePath,
+      outputPath,
+      format: transcodeSettings.format,
+      videoCodec: transcodeSettings.videoCodec,
+      audioCodec: transcodeSettings.audioCodec,
+      crf: transcodeSettings.crf,
+      performanceMode: transcodeSettings.performanceMode,
+      startSec,
+      clipDurationSec: durationSec,
+      lutPath,
+      lutIntensity,
+      sourceVideoBitRateKbps,
+      durationSec,
+      jobId,
+      onProgress
+    })
+    return
+  }
+
   if (!shouldApplyLut) {
     const command = ffmpeg(filePath)
       .setStartTime(startSec)
@@ -1308,6 +1476,10 @@ async function exportSingleClip(options: {
           }
         })
 
+      if (encoder.inputOptions && encoder.inputOptions.length > 0) {
+        command.inputOptions(encoder.inputOptions)
+      }
+
       if (audioMode === 'copy') {
         command.audioCodec('copy')
       } else {
@@ -1354,6 +1526,7 @@ async function exportSingleClip(options: {
 async function exportSingleFullVideo(options: {
   filePath: string
   outputPath: string
+  transcodeSettings?: ExportTranscodeSettings | null
   lutPath?: string | null
   lutIntensity?: number
   sourceVideoBitRateKbps?: number | null
@@ -1365,6 +1538,7 @@ async function exportSingleFullVideo(options: {
   const {
     filePath,
     outputPath,
+    transcodeSettings = null,
     lutPath = null,
     lutIntensity = 100,
     sourceVideoBitRateKbps = null,
@@ -1373,6 +1547,25 @@ async function exportSingleFullVideo(options: {
     jobId = null,
     onProgress
   } = options
+
+  if (transcodeSettings) {
+    await exportSingleConvertedVideo({
+      filePath,
+      outputPath,
+      format: transcodeSettings.format,
+      videoCodec: transcodeSettings.videoCodec,
+      audioCodec: transcodeSettings.audioCodec,
+      crf: transcodeSettings.crf,
+      performanceMode: transcodeSettings.performanceMode,
+      lutPath,
+      lutIntensity,
+      sourceVideoBitRateKbps,
+      durationSec,
+      jobId,
+      onProgress
+    })
+    return
+  }
 
   const encoderAttempts = getExportEncoderAttempts()
   let lastErrorMessage = 'Failed to export full video'
@@ -1405,6 +1598,10 @@ async function exportSingleFullVideo(options: {
             onProgress?.(Math.min(100, Math.max(0, fullPercent)))
           }
         })
+
+      if (encoder.inputOptions && encoder.inputOptions.length > 0) {
+        command.inputOptions(encoder.inputOptions)
+      }
 
       if (audioMode === 'copy') {
         command.audioCodec('copy')
@@ -1457,6 +1654,12 @@ async function exportSingleConvertedVideo(options: {
   audioCodec: ConvertAudioCodecTarget
   crf: number
   performanceMode: ConvertPerformanceMode
+  startSec?: number | null
+  clipDurationSec?: number | null
+  maxOutputSizeBytes?: number | null
+  lutPath?: string | null
+  lutIntensity?: number
+  sourceVideoBitRateKbps?: number | null
   durationSec?: number | null
   jobId?: string | null
   onProgress?: (percent: number) => void
@@ -1469,6 +1672,12 @@ async function exportSingleConvertedVideo(options: {
     audioCodec,
     crf,
     performanceMode,
+    startSec = null,
+    clipDurationSec = null,
+    maxOutputSizeBytes = null,
+    lutPath = null,
+    lutIntensity = 100,
+    sourceVideoBitRateKbps = null,
     durationSec = null,
     jobId = null,
     onProgress
@@ -1491,19 +1700,37 @@ async function exportSingleConvertedVideo(options: {
     }
 
     attemptedCount += 1
+    const targetPixFmt = videoCodec === 'prores' ? 'yuv422p10le' : 'yuv420p'
     const outputOptions = [
       '-threads', `${threadCount}`,
-      '-pix_fmt', 'yuv420p',
+      '-pix_fmt', targetPixFmt,
       ...encoder.outputOptions({ crf })
     ]
+    const lutFilterGraph = buildLutFilterGraph(lutPath, lutIntensity)
+    if (lutFilterGraph) {
+      outputOptions.push('-vf', lutFilterGraph)
+      if (sourceVideoBitRateKbps && sourceVideoBitRateKbps > 0) {
+        outputOptions.push(...buildLutExportVideoBitrateOptions(sourceVideoBitRateKbps))
+      }
+    }
 
     if (format === 'mp4' || format === 'mov') {
       outputOptions.unshift('+faststart')
       outputOptions.unshift('-movflags')
     }
+    if (maxOutputSizeBytes && Number.isFinite(maxOutputSizeBytes) && maxOutputSizeBytes > 0) {
+      outputOptions.push('-fs', `${Math.max(1, Math.floor(maxOutputSizeBytes))}`)
+    }
 
-    try {
+    const runConvertCommand = async (activeAudioCodec: ConvertAudioCodecTarget) => {
       const command = ffmpeg(filePath)
+      if (startSec !== null && Number.isFinite(startSec) && startSec >= 0) {
+        command.setStartTime(startSec)
+      }
+      if (clipDurationSec !== null && Number.isFinite(clipDurationSec) && clipDurationSec > 0) {
+        command.setDuration(clipDurationSec)
+      }
+      command
         .output(outputPath)
         .format(muxerFormat)
         .videoCodec(encoder.videoCodec)
@@ -1526,9 +1753,9 @@ async function exportSingleConvertedVideo(options: {
         command.inputOptions(encoder.inputOptions)
       }
 
-      if (audioCodec === 'copy') {
+      if (activeAudioCodec === 'copy') {
         command.audioCodec('copy')
-      } else if (audioCodec === 'opus') {
+      } else if (activeAudioCodec === 'opus') {
         command.audioCodec('libopus')
         command.audioBitrate('160k')
       } else {
@@ -1537,11 +1764,27 @@ async function exportSingleConvertedVideo(options: {
       }
 
       await runFfmpegCommand(command, { jobId })
+    }
 
+    try {
+      await runConvertCommand(audioCodec)
       return
     } catch (error: unknown) {
       lastErrorMessage = getErrorMessage(error)
       await removeFileIfExists(outputPath)
+
+      if (audioCodec === 'copy' && isLikelyAudioCopyFailure(lastErrorMessage)) {
+        const fallbackAudioCodec = ensureCompatibleConvertAudioCodec(format, CONVERT_FORMAT_DEFAULT_AUDIO_CODEC[format])
+        if (fallbackAudioCodec !== 'copy') {
+          try {
+            await runConvertCommand(fallbackAudioCodec)
+            return
+          } catch (fallbackError: unknown) {
+            lastErrorMessage = getErrorMessage(fallbackError)
+            await removeFileIfExists(outputPath)
+          }
+        }
+      }
 
       if (isUnsupportedEncoderError(lastErrorMessage)) {
         unsupportedConvertEncoders.add(encoder.videoCodec)
@@ -1565,6 +1808,7 @@ async function exportSingleSizeSplitClip(options: {
   outputPath: string
   startSec: number
   targetSizeBytes: number
+  transcodeSettings?: ExportTranscodeSettings | null
   estimatedDurationSec?: number
   jobId?: string | null
   onProgress?: (processedSeconds: number) => void
@@ -1574,10 +1818,34 @@ async function exportSingleSizeSplitClip(options: {
     outputPath,
     startSec,
     targetSizeBytes,
+    transcodeSettings = null,
     estimatedDurationSec = 0,
     jobId = null,
     onProgress
   } = options
+
+  if (transcodeSettings) {
+    await exportSingleConvertedVideo({
+      filePath,
+      outputPath,
+      format: transcodeSettings.format,
+      videoCodec: transcodeSettings.videoCodec,
+      audioCodec: transcodeSettings.audioCodec,
+      crf: transcodeSettings.crf,
+      performanceMode: transcodeSettings.performanceMode,
+      startSec,
+      maxOutputSizeBytes: targetSizeBytes,
+      durationSec: estimatedDurationSec > 0 ? estimatedDurationSec : null,
+      jobId,
+      onProgress: (percent) => {
+        if (estimatedDurationSec > 0) {
+          const processedSeconds = (Math.min(100, Math.max(0, percent)) / 100) * estimatedDurationSec
+          onProgress?.(processedSeconds)
+        }
+      }
+    })
+    return
+  }
 
   await new Promise<void>((resolve, reject) => {
     const command = ffmpeg(filePath)
@@ -1980,7 +2248,13 @@ ipcMain.handle('cleanup-preview', async (_event, { proxyPath }) => {
   }
 })
 
-ipcMain.handle('process-size-split', async (event, { filePath, outputDir, targetSizeMb, jobId }) => {
+ipcMain.handle('process-size-split', async (event, {
+  filePath,
+  outputDir,
+  targetSizeMb,
+  defaultExportPreference,
+  jobId
+}) => {
   if (!filePath || typeof filePath !== 'string') {
     return { success: false, error: 'Invalid file path', results: [] }
   }
@@ -1996,6 +2270,7 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
 
   const targetSizeBytes = Math.max(1, Math.floor(normalizedTargetSizeMb * BYTES_PER_MEGABYTE))
   const results: Array<{ id: string; success: boolean; path?: string; error?: string }> = []
+  const normalizedDefaultExportPreference = normalizeDefaultExportPreference(defaultExportPreference)
 
   const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
   const releaseJobScope = beginJobScope(progressJobId)
@@ -2031,6 +2306,12 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
     }
 
     const sourceInfo = await probeVideoInfo(filePath)
+    const splitTranscodeSettings = resolveExportTranscodeSettings({
+      preference: normalizedDefaultExportPreference,
+      filePath,
+      shouldApplyLut: false,
+      sourceInfo
+    })
     const totalDurationSec = sourceInfo.durationSec
     if (!totalDurationSec || !Number.isFinite(totalDurationSec) || totalDurationSec <= 0) {
       return { success: false, error: 'Unable to read source duration', results }
@@ -2044,7 +2325,9 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
 
     const safeEstimatedClipDurationSec = Math.max(MIN_SPLIT_CLIP_DURATION_SEC, estimatedClipDurationSec)
     const sourceExt = path.extname(filePath)
-    const outputExt = resolveStreamCopyOutputExtension(filePath)
+    const outputExt = splitTranscodeSettings
+      ? CONVERT_FORMAT_EXTENSION_MAP[splitTranscodeSettings.format]
+      : resolveStreamCopyOutputExtension(filePath)
     const baseName = path.basename(filePath, sourceExt)
 
     emitExportProgress('start', 0, 0, estimatedTotalClips)
@@ -2076,6 +2359,7 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
         outputPath,
         startSec: clipStartSec,
         targetSizeBytes,
+        transcodeSettings: splitTranscodeSettings,
         estimatedDurationSec: safeEstimatedClipDurationSec,
         jobId: progressJobId,
         onProgress: reportSplitProgress
@@ -2138,7 +2422,15 @@ ipcMain.handle('process-size-split', async (event, { filePath, outputDir, target
   }
 })
 
-ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, lutPath, lutIntensity, jobId }) => {
+ipcMain.handle('process-batch', async (event, {
+  filePath,
+  outputDir,
+  segments,
+  lutPath,
+  lutIntensity,
+  defaultExportPreference,
+  jobId
+}) => {
   const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
 
   const normalizedSegments: BatchSegmentInput[] = Array.isArray(segments)
@@ -2166,17 +2458,29 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
 
   const resolvedLutPath = await resolveLutPath(lutPath)
   const resolvedLutIntensity = normalizeLutIntensity(lutIntensity)
+  const normalizedDefaultExportPreference = normalizeDefaultExportPreference(defaultExportPreference)
   const shouldApplyLut = Boolean(resolvedLutPath)
+  let sourceInfo: ProbeVideoInfo | null = null
   let sourceVideoBitRateKbps: number | null = null
   let sourceAudioBitRateKbps: number | null = null
   if (shouldApplyLut) {
     const probeResult = await probeSourceInfoWithBitrates(filePath)
+    sourceInfo = probeResult.info
     sourceVideoBitRateKbps = probeResult.sourceVideoBitRateKbps
     sourceAudioBitRateKbps = probeResult.sourceAudioBitRateKbps
   }
+  const exportTranscodeSettings = resolveExportTranscodeSettings({
+    preference: normalizedDefaultExportPreference,
+    filePath,
+    shouldApplyLut,
+    sourceInfo
+  })
   const totalSegments = normalizedSegments.length
   const results: Array<{ id: string; success: boolean; path?: string; error?: string }> = []
-  console.log(`Batch processing ${totalSegments} clips from: ${filePath} (mode: ${shouldApplyLut ? `LUT ${path.basename(resolvedLutPath!)} @ ${resolvedLutIntensity}%` : 'stream-copy'})`)
+  const exportModeLabel = exportTranscodeSettings
+    ? `transcode ${exportTranscodeSettings.format}/${exportTranscodeSettings.videoCodec}`
+    : 'stream-copy'
+  console.log(`Batch processing ${totalSegments} clips from: ${filePath} (mode: ${shouldApplyLut ? `LUT ${path.basename(resolvedLutPath!)} @ ${resolvedLutIntensity}% + ${exportModeLabel}` : exportModeLabel})`)
 
   const releaseJobScope = beginJobScope(progressJobId)
   let lastReportedProgress = -1
@@ -2209,8 +2513,8 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
     await fs.promises.mkdir(outputDir, { recursive: true })
 
     const baseName = path.basename(filePath, path.extname(filePath))
-    const outputExtension = shouldApplyLut
-      ? '.mov'
+    const outputExtension = exportTranscodeSettings
+      ? CONVERT_FORMAT_EXTENSION_MAP[exportTranscodeSettings.format]
       : resolveStreamCopyOutputExtension(filePath)
 
     for (let i = 0; i < totalSegments; i++) {
@@ -2239,6 +2543,7 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
           startSec: seg.start,
           durationSec: duration,
           outputPath: tempVidPath,
+          transcodeSettings: exportTranscodeSettings,
           lutPath: resolvedLutPath,
           lutIntensity: resolvedLutIntensity,
           sourceVideoBitRateKbps,
@@ -2280,7 +2585,14 @@ ipcMain.handle('process-batch', async (event, { filePath, outputDir, segments, l
   }
 })
 
-ipcMain.handle('process-lut-full-batch', async (event, { videos, outputDir, lutPath, lutIntensity, jobId }) => {
+ipcMain.handle('process-lut-full-batch', async (event, {
+  videos,
+  outputDir,
+  lutPath,
+  lutIntensity,
+  defaultExportPreference,
+  jobId
+}) => {
   const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
 
   const resolvedLutPath = await resolveLutPath(lutPath)
@@ -2289,6 +2601,7 @@ ipcMain.handle('process-lut-full-batch', async (event, { videos, outputDir, lutP
   }
 
   const resolvedLutIntensity = normalizeLutIntensity(lutIntensity)
+  const normalizedDefaultExportPreference = normalizeDefaultExportPreference(defaultExportPreference)
   const normalizedVideos = Array.isArray(videos)
     ? videos.filter((video) => (
       Boolean(video) &&
@@ -2343,8 +2656,17 @@ ipcMain.handle('process-lut-full-batch', async (event, { videos, outputDir, lutP
           sourceVideoBitRateKbps,
           sourceAudioBitRateKbps
         } = await probeSourceInfoWithBitrates(entry.filePath)
+        const exportTranscodeSettings = resolveExportTranscodeSettings({
+          preference: normalizedDefaultExportPreference,
+          filePath: entry.filePath,
+          shouldApplyLut: true,
+          sourceInfo: info
+        })
         const baseName = path.basename(entry.filePath, path.extname(entry.filePath))
-        const outputPath = await buildUniqueOutputPath(outputDir, `${baseName}_lut`, '.mov')
+        const outputExtension = exportTranscodeSettings
+          ? CONVERT_FORMAT_EXTENSION_MAP[exportTranscodeSettings.format]
+          : '.mov'
+        const outputPath = await buildUniqueOutputPath(outputDir, `${baseName}_lut`, outputExtension)
 
         let maxVideoPercent = 0
         const emitVideoProgress = (videoPercent: number) => {
@@ -2356,6 +2678,7 @@ ipcMain.handle('process-lut-full-batch', async (event, { videos, outputDir, lutP
         await exportSingleFullVideo({
           filePath: entry.filePath,
           outputPath,
+          transcodeSettings: exportTranscodeSettings,
           lutPath: resolvedLutPath,
           lutIntensity: resolvedLutIntensity,
           sourceVideoBitRateKbps,

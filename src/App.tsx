@@ -2,7 +2,7 @@
 import type { VideoPlayerRef } from './components/VideoPlayer';
 import { QuickLutPreviewVideoListModal } from './components/quick-actions/QuickLutBatchFeature';
 import { VIDEO_FILE_ACCEPT, getFileNameFromPath, isSupportedVideoFile, toFileUrl } from './lib/video';
-import type { ExportProgressController } from './features/quick-actions/types';
+import type { DefaultExportPreference, ExportProgressController } from './features/quick-actions/types';
 import { useQuickSplitBySize } from './features/quick-actions/hooks/useQuickSplitBySize';
 import { useQuickLutBatch } from './features/quick-actions/hooks/useQuickLutBatch';
 import { useQuickConvertBatch } from './features/quick-actions/hooks/useQuickConvertBatch';
@@ -12,10 +12,16 @@ import { useMainSettings, type ThemePreference } from './features/main/hooks/use
 import SettingsModal from './features/main/components/SettingsModal';
 import QueueModal from './features/main/components/QueueModal';
 import LutFullExportConfirmModal from './features/main/components/LutFullExportConfirmModal';
+import ExportFormatSettingsModal from './features/main/components/ExportFormatSettingsModal';
 import ProgressOverlays from './features/main/components/ProgressOverlays';
 import MainEditorWorkspace from './features/main/components/MainEditorWorkspace';
 import MainLandingWorkspace from './features/main/components/MainLandingWorkspace';
 import type { QueueVideoItem, Segment } from './features/main/types';
+import {
+  DEFAULT_EXPORT_PREFERENCE,
+  DEFAULT_EXPORT_PREFERENCE_STORAGE_KEY,
+  normalizeDefaultExportPreference
+} from './features/main/lib/defaultExport';
 import { translations, type TranslationKey } from './i18n/translations';
 import { v4 as uuidv4 } from 'uuid';
 import packageJson from '../package.json';
@@ -29,6 +35,14 @@ const DEFAULT_SPLIT_TARGET_SIZE_MB = 800;
 const MIN_SPLIT_TARGET_SIZE_MB = 1;
 const MAX_SPLIT_TARGET_SIZE_MB = 1024 * 100;
 const APP_VERSION = packageJson.version;
+
+const EXPORT_CODEC_LABEL_MAP: Record<DefaultExportPreference['videoCodec'], string> = {
+  h264: 'H.264',
+  hevc: 'H.265',
+  vp9: 'VP9',
+  av1: 'AV1',
+  prores: 'ProRes'
+};
 
 const clampLutIntensity = (value: number) => {
   if (!Number.isFinite(value)) {
@@ -79,6 +93,20 @@ const parseStoredTagLibrary = (): string[] => {
     return [];
   }
 };
+
+const parseStoredDefaultExportPreference = (): DefaultExportPreference => {
+  const raw = localStorage.getItem(DEFAULT_EXPORT_PREFERENCE_STORAGE_KEY);
+  if (!raw) {
+    return { ...DEFAULT_EXPORT_PREFERENCE };
+  }
+
+  try {
+    return normalizeDefaultExportPreference(JSON.parse(raw));
+  } catch {
+    return { ...DEFAULT_EXPORT_PREFERENCE };
+  }
+};
+
 const formatTime = (seconds: number) => {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
@@ -143,7 +171,11 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [showLutFullExportConfirm, setShowLutFullExportConfirm] = useState(false);
+  const [showExportFormatSettings, setShowExportFormatSettings] = useState(false);
   const [tagLibrary, setTagLibrary] = useState<string[]>(parseStoredTagLibrary);
+  const [defaultExportPreference, setDefaultExportPreference] = useState<DefaultExportPreference>(
+    parseStoredDefaultExportPreference
+  );
   const [newTagDraft, setNewTagDraft] = useState('');
   const [activeQuickAction, setActiveQuickAction] = useState<'split-by-size' | 'lut-full-batch' | 'convert-batch' | null>(null);
   const isQuickSplitPanelOpen = activeQuickAction === 'split-by-size';
@@ -228,6 +260,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem(TAG_LIBRARY_STORAGE_KEY, JSON.stringify(tagLibrary));
   }, [tagLibrary]);
+
+  useEffect(() => {
+    localStorage.setItem(DEFAULT_EXPORT_PREFERENCE_STORAGE_KEY, JSON.stringify(defaultExportPreference));
+  }, [defaultExportPreference]);
 
 
   // Video State
@@ -706,6 +742,7 @@ function App() {
   } = useQuickSplitBySize({
     t: tForFeatures,
     exportController: exportProgressController,
+    defaultExportPreference,
     defaultTargetSizeMb: DEFAULT_SPLIT_TARGET_SIZE_MB
   });
 
@@ -747,6 +784,7 @@ function App() {
   } = useQuickLutBatch({
     t: tForFeatures,
     isQuickLutBatchPanelOpen,
+    defaultExportPreference,
     exportController: exportProgressController,
     cleanupPreviewProxy,
     clampLutIntensity,
@@ -1226,6 +1264,7 @@ function App() {
             })),
             lutPath: shouldApplyLutOnExport ? normalizedLutPath : undefined,
             lutIntensity: shouldApplyLutOnExport ? normalizedLutIntensity : undefined,
+            defaultExportPreference,
             jobId
           });
           if (res.canceled) {
@@ -1324,6 +1363,7 @@ function App() {
           outputDir,
           lutPath: normalizedLutPath,
           lutIntensity: normalizedLutIntensity,
+          defaultExportPreference,
           jobId
         });
 
@@ -1412,6 +1452,9 @@ function App() {
       : t('exportingClips');
   const cancelExportLabel = t('stopTask');
   const cancelingExportLabel = t('stoppingTask');
+  const defaultExportLabel = defaultExportPreference.mode === 'source'
+    ? t('statusExportFormatSource')
+    : `${defaultExportPreference.format.toUpperCase()} / ${EXPORT_CODEC_LABEL_MAP[defaultExportPreference.videoCodec]}`;
 
   return (
     <div
@@ -1442,6 +1485,18 @@ function App() {
             return;
           }
           setEnableLutPreview(!enableLutPreview);
+        }}
+      />
+
+      <ExportFormatSettingsModal
+        visible={showExportFormatSettings}
+        t={t}
+        resolvedTheme={resolvedTheme}
+        value={defaultExportPreference}
+        onClose={() => setShowExportFormatSettings(false)}
+        onConfirm={(nextValue) => {
+          setDefaultExportPreference(nextValue);
+          setShowExportFormatSettings(false);
         }}
       />
 
@@ -1694,6 +1749,8 @@ function App() {
         t={t}
         language={language}
         onToggleLanguage={toggleLanguage}
+        defaultExportLabel={defaultExportLabel}
+        onOpenExportFormatSettings={() => setShowExportFormatSettings(true)}
         themePreference={themePreference}
         resolvedTheme={resolvedTheme}
         onChangeThemePreference={changeThemePreference}

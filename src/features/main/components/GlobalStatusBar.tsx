@@ -1,4 +1,4 @@
-import { Github, Languages, Monitor, Moon, Sun } from 'lucide-react';
+import { FileOutput, Github, Languages, Monitor, Moon, Sun } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { Language, TranslationKey } from '../../../i18n/translations';
 import type { ResolvedTheme, ThemePreference } from '../hooks/useMainSettings';
@@ -7,6 +7,8 @@ interface GlobalStatusBarProps {
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
   language: Language;
   onToggleLanguage: () => void;
+  defaultExportLabel: string;
+  onOpenExportFormatSettings: () => void;
   themePreference: ThemePreference;
   resolvedTheme: ResolvedTheme;
   onChangeThemePreference: (nextTheme: ThemePreference) => void;
@@ -28,6 +30,8 @@ const GlobalStatusBar = ({
   t,
   language,
   onToggleLanguage,
+  defaultExportLabel,
+  onOpenExportFormatSettings,
   themePreference,
   resolvedTheme,
   onChangeThemePreference,
@@ -77,6 +81,21 @@ const GlobalStatusBar = ({
         >
           <Languages className={cn('w-3.5 h-3.5', isLight ? 'text-sky-500' : 'text-blue-400')} />
           <span>{t('statusLanguage')}: {languageLabel}</span>
+        </button>
+
+        <button
+          type="button"
+          className={cn(
+            'h-8 px-3 rounded-full border text-xs transition-all duration-200 flex items-center gap-1.5 whitespace-nowrap',
+            isLight
+              ? 'border-slate-300 bg-white/85 hover:bg-white text-slate-700'
+              : 'border-white/10 bg-zinc-900/60 hover:bg-zinc-800/60 text-zinc-200'
+          )}
+          onClick={onOpenExportFormatSettings}
+          title={t('statusExportFormat')}
+        >
+          <FileOutput className={cn('w-3.5 h-3.5', isLight ? 'text-cyan-600' : 'text-cyan-300')} />
+          <span>{t('statusExportFormat')}: {defaultExportLabel}</span>
         </button>
 
         <div className={cn(

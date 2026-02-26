@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     segments: { start: number, end: number, id: string, tags?: string[] }[],
     lutPath?: string,
     lutIntensity?: number,
+    defaultExportPreference?: {
+      mode: 'transcode' | 'source',
+      format: 'mp4' | 'mkv' | 'webm' | 'mov',
+      videoCodec: 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores'
+    },
     jobId?: string
   }) => ipcRenderer.invoke('process-batch', opts),
 
@@ -34,6 +39,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     outputDir: string,
     lutPath: string,
     lutIntensity?: number,
+    defaultExportPreference?: {
+      mode: 'transcode' | 'source',
+      format: 'mp4' | 'mkv' | 'webm' | 'mov',
+      videoCodec: 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores'
+    },
     jobId?: string
   }) => ipcRenderer.invoke('process-lut-full-batch', opts),
 
@@ -41,6 +51,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     filePath: string,
     outputDir: string,
     targetSizeMb: number,
+    defaultExportPreference?: {
+      mode: 'transcode' | 'source',
+      format: 'mp4' | 'mkv' | 'webm' | 'mov',
+      videoCodec: 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores'
+    },
     jobId?: string
   }) => ipcRenderer.invoke('process-size-split', opts),
 
@@ -48,7 +63,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     videos: { id: string; filePath: string }[],
     outputDir: string,
     format: 'mp4' | 'mkv' | 'webm' | 'mov',
-    videoCodec: 'h264' | 'hevc' | 'vp9' | 'av1',
+    videoCodec: 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores',
     audioCodec: 'aac' | 'opus' | 'copy',
     crf: number,
     performanceMode?: 'auto' | 'cpu',

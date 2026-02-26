@@ -1,11 +1,17 @@
 import { v4 as uuidv4 } from 'uuid';
 import { useCallback, useState, type ChangeEvent, type Dispatch, type SetStateAction } from 'react';
 import { getFileNameFromPath, isSupportedVideoFile } from '../../../lib/video';
-import type { ExportProgressController, QuickLutBatchVideoItem, TranslateFn } from '../types';
+import type {
+  DefaultExportPreference,
+  ExportProgressController,
+  QuickLutBatchVideoItem,
+  TranslateFn
+} from '../types';
 
 interface UseQuickSplitBySizeParams {
   t: TranslateFn;
   exportController: ExportProgressController;
+  defaultExportPreference: DefaultExportPreference;
   defaultTargetSizeMb: number;
 }
 
@@ -24,6 +30,7 @@ interface UseQuickSplitBySizeResult {
 export const useQuickSplitBySize = ({
   t,
   exportController,
+  defaultExportPreference,
   defaultTargetSizeMb
 }: UseQuickSplitBySizeParams): UseQuickSplitBySizeResult => {
   const [quickSplitTargetSizeMb, setQuickSplitTargetSizeMb] = useState(defaultTargetSizeMb);
@@ -128,6 +135,7 @@ export const useQuickSplitBySize = ({
             filePath: videoItem.filePath,
             outputDir,
             targetSizeMb: normalizedTargetSizeMb,
+            defaultExportPreference,
             jobId
           });
           if (result.canceled) {
@@ -211,7 +219,7 @@ export const useQuickSplitBySize = ({
       console.error('Size split export error:', error);
       alert(t('quickSplitFailed') + errorMessage);
     }
-  }, [exportController, quickSplitSourceVideos, quickSplitTargetSizeMb, t]);
+  }, [defaultExportPreference, exportController, quickSplitSourceVideos, quickSplitTargetSizeMb, t]);
 
   return {
     quickSplitTargetSizeMb,

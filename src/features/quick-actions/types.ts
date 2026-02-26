@@ -17,11 +17,19 @@ export type QuickConvertBatchVideoItem = QuickLutBatchVideoItem;
 
 export type ConvertContainerFormat = 'mp4' | 'mkv' | 'webm' | 'mov';
 
-export type ConvertVideoCodecTarget = 'h264' | 'hevc' | 'vp9' | 'av1';
+export type ConvertVideoCodecTarget = 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores';
 
 export type ConvertAudioCodecTarget = 'aac' | 'opus' | 'copy';
 
 export type ConvertPerformanceMode = 'auto' | 'cpu';
+
+export type DefaultExportPreferenceMode = 'transcode' | 'source';
+
+export interface DefaultExportPreference {
+  mode: DefaultExportPreferenceMode;
+  format: ConvertContainerFormat;
+  videoCodec: ConvertVideoCodecTarget;
+}
 
 export interface QuickConvertBatchSettings {
   format: ConvertContainerFormat;
