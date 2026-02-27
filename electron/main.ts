@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, nativeTheme, shell } from 'electron'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -53,11 +53,12 @@ const WINDOW_THEME_CONFIG: Record<WindowTheme, {
   }
 }
 
-// On macOS, force software rendering for better compatibility with problematic media decoders.
-// Set BATCHCLIP_FORCE_HW_ACCEL=1 to opt back in to hardware acceleration.
+// On macOS, disable Electron UI hardware acceleration for preview compatibility.
+// This does not disable FFmpeg VideoToolbox hardware encoding/decoding.
+// Set BATCHCLIP_FORCE_HW_ACCEL=1 to opt back in to Electron UI hardware acceleration.
 if (process.platform === 'darwin' && process.env.BATCHCLIP_FORCE_HW_ACCEL !== '1') {
   app.disableHardwareAcceleration()
-  console.log('[BatchClip] Hardware acceleration is disabled on macOS for video compatibility.')
+  console.log('[BatchClip] Electron UI hardware acceleration is disabled on macOS for video compatibility (FFmpeg VideoToolbox remains available).')
 }
 
 type ProbeVideoStream = {
@@ -188,7 +189,8 @@ const PREVIEW_DARWIN_VIDEOTOOLBOX_ENCODER: PreviewEncoderConfig = {
 }
 
 const EXPORT_PRIMARY_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET || 'medium'
-const EXPORT_FALLBACK_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET_FALLBACK || 'slow'
+const EXPORT_FALLBACK_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET_FALLBACK
+  || (process.platform === 'darwin' ? 'veryfast' : 'slow')
 const MAX_PROBE_CACHE_ENTRIES = 128
 const INVALID_FILENAME_CHARS = /[<>:"/\\|?*]/g
 const BYTES_PER_MEGABYTE = 1024 * 1024
@@ -229,6 +231,14 @@ const LUT_EXPORT_MAX_VIDEO_BITRATE_KBPS = 120000
 const LUT_EXPORT_FALLBACK_AAC_BITRATE_KBPS = 192
 const LUT_EXPORT_MIN_AAC_BITRATE_KBPS = 96
 const LUT_EXPORT_MAX_AAC_BITRATE_KBPS = 512
+const SPLIT_TARGET_BITRATE_MARGIN = 0.92
+const SPLIT_TARGET_MIN_VIDEO_BITRATE_KBPS = 300
+const SPLIT_TARGET_MAX_VIDEO_BITRATE_KBPS = 200000
+const SPLIT_TARGET_VIDEO_MAXRATE_SCALE = 1.08
+const SPLIT_TARGET_VIDEO_BUFSIZE_SCALE = 2.0
+const CONVERT_DEFAULT_AUDIO_BITRATE_KBPS = 160
+const ESTIMATED_COPY_AUDIO_BITRATE_KBPS = 192
+const DARWIN_VIDEOTOOLBOX_DEFAULT_VIDEO_BITRATE_KBPS = 13000
 
 const DEFAULT_CONVERT_CRF = 23
 const MIN_CONVERT_CRF = 0
@@ -279,10 +289,44 @@ const CONVERT_FORMAT_ALLOWED_AUDIO_CODECS: Record<ConvertContainerFormat, Set<Co
 }
 
 const unsupportedConvertEncoders = new Set<string>()
+const availableFfmpegEncoders = detectAvailableFfmpegEncoders()
 const DEFAULT_EXPORT_PREFERENCE: DefaultExportPreference = {
   mode: 'transcode',
   format: 'mp4',
   videoCodec: 'h264'
+}
+
+function detectAvailableFfmpegEncoders(): Set<string> | null {
+  try {
+    const probeResult = spawnSync(ffmpegPath, ['-hide_banner', '-encoders'], {
+      windowsHide: true,
+      encoding: 'utf8'
+    })
+    if (probeResult.error) {
+      return null
+    }
+
+    const probeOutput = `${probeResult.stdout ?? ''}\n${probeResult.stderr ?? ''}`
+    const supportedEncoders = new Set<string>()
+    const lines = probeOutput.split(/\r?\n/)
+    for (const line of lines) {
+      const match = line.match(/^\s*[A-Z.]{6}\s+([a-z0-9_]+)/i)
+      if (match?.[1]) {
+        supportedEncoders.add(match[1].toLowerCase())
+      }
+    }
+
+    return supportedEncoders.size > 0 ? supportedEncoders : null
+  } catch {
+    return null
+  }
+}
+
+function isFfmpegEncoderSupported(encoderName: string): boolean {
+  if (!availableFfmpegEncoders) {
+    return true
+  }
+  return availableFfmpegEncoders.has(encoderName.toLowerCase())
 }
 
 function getErrorMessage(error: unknown): string {
@@ -395,7 +439,7 @@ function throwIfJobCanceled(jobId: string | null): void {
   }
 }
 
-function cancelRunningJob(jobId: string): boolean {
+function cancelRunningJobController(jobId: string): boolean {
   const controller = jobControllers.get(jobId)
   if (!controller) {
     return false
@@ -411,6 +455,18 @@ function cancelRunningJob(jobId: string): boolean {
   }
 
   return true
+}
+
+function cancelRunningJob(jobId: string): boolean {
+  let canceled = cancelRunningJobController(jobId)
+  const scopedPrefix = `${jobId}:`
+  for (const activeJobId of jobControllers.keys()) {
+    if (!activeJobId.startsWith(scopedPrefix)) {
+      continue
+    }
+    canceled = cancelRunningJobController(activeJobId) || canceled
+  }
+  return canceled
 }
 
 function normalizeTagLabel(value: unknown): string | null {
@@ -510,6 +566,14 @@ function resolveSourceBitRateKbps(info: ProbeVideoInfo): number | null {
   }
 
   return null
+}
+
+function resolveSourceVideoBitRateKbps(info: ProbeVideoInfo): number | null {
+  const sourceAudioBitRateKbps = info.audioStream?.bit_rate_kbps ?? null
+  return info.stream?.bit_rate_kbps ??
+    (info.formatBitRateKbps
+      ? Math.max(400, info.formatBitRateKbps - (sourceAudioBitRateKbps ?? 0))
+      : null)
 }
 
 function parseTimemarkToSeconds(timemark: string): number | null {
@@ -866,7 +930,9 @@ function getExportEncoderAttempts(): ExportEncoderConfig[] {
       EXPORT_WINDOWS_AMF_ENCODER
     )
   } else if (process.platform === 'darwin') {
-    attempts.push(EXPORT_DARWIN_VIDEOTOOLBOX_ENCODER)
+    if (isFfmpegEncoderSupported(EXPORT_DARWIN_VIDEOTOOLBOX_ENCODER.videoCodec)) {
+      attempts.push(EXPORT_DARWIN_VIDEOTOOLBOX_ENCODER)
+    }
   }
 
   attempts.push(softwarePrimary)
@@ -1072,6 +1138,88 @@ function buildLutExportVideoBitrateOptions(sourceVideoBitRateKbps: number): stri
   ]
 }
 
+function clampSplitTargetVideoBitrateKbps(value: number): number {
+  return Math.min(
+    SPLIT_TARGET_MAX_VIDEO_BITRATE_KBPS,
+    Math.max(SPLIT_TARGET_MIN_VIDEO_BITRATE_KBPS, Math.round(value))
+  )
+}
+
+function resolveConvertAudioBitrateKbps(audioCodec: ConvertAudioCodecTarget): number {
+  if (audioCodec === 'copy') {
+    return ESTIMATED_COPY_AUDIO_BITRATE_KBPS
+  }
+  return CONVERT_DEFAULT_AUDIO_BITRATE_KBPS
+}
+
+function resolveSplitTargetVideoBitrateKbps(options: {
+  maxOutputSizeBytes: number | null
+  durationSec: number | null
+  audioCodec: ConvertAudioCodecTarget
+}): number | null {
+  const { maxOutputSizeBytes, durationSec, audioCodec } = options
+  if (!maxOutputSizeBytes || !Number.isFinite(maxOutputSizeBytes) || maxOutputSizeBytes <= 0) {
+    return null
+  }
+  if (!durationSec || !Number.isFinite(durationSec) || durationSec <= 0) {
+    return null
+  }
+
+  const totalBitrateKbps = (maxOutputSizeBytes * 8) / durationSec / 1000
+  const reservedAudioBitrateKbps = resolveConvertAudioBitrateKbps(audioCodec)
+  const videoBitrateKbps = (totalBitrateKbps - reservedAudioBitrateKbps) * SPLIT_TARGET_BITRATE_MARGIN
+  if (!Number.isFinite(videoBitrateKbps) || videoBitrateKbps <= 0) {
+    return null
+  }
+
+  return clampSplitTargetVideoBitrateKbps(videoBitrateKbps)
+}
+
+function buildSplitTargetVideoBitrateOptions(targetBitrateKbps: number): string[] {
+  const maxRateKbps = clampSplitTargetVideoBitrateKbps(targetBitrateKbps * SPLIT_TARGET_VIDEO_MAXRATE_SCALE)
+  const bufferSizeKbps = clampSplitTargetVideoBitrateKbps(targetBitrateKbps * SPLIT_TARGET_VIDEO_BUFSIZE_SCALE)
+  return [
+    '-b:v', `${targetBitrateKbps}k`,
+    '-maxrate', `${Math.max(targetBitrateKbps, maxRateKbps)}k`,
+    '-bufsize', `${Math.max(targetBitrateKbps, bufferSizeKbps)}k`
+  ]
+}
+
+function buildDarwinVideoToolboxTargetBitrateOptions(targetBitrateKbps: number): string[] {
+  return ['-b:v', `${Math.max(1, Math.round(targetBitrateKbps))}k`]
+}
+
+function isDarwinBitrateControlledVideoToolboxCodec(videoCodec: string): boolean {
+  if (process.platform !== 'darwin') {
+    return false
+  }
+  return videoCodec === 'h264_videotoolbox' || videoCodec === 'hevc_videotoolbox'
+}
+
+function resolveDarwinVideoToolboxVideoBitrateKbps(sourceVideoBitRateKbps: number | null): number {
+  const referenceBitrateKbps = sourceVideoBitRateKbps && Number.isFinite(sourceVideoBitRateKbps) && sourceVideoBitRateKbps > 0
+    ? sourceVideoBitRateKbps
+    : DARWIN_VIDEOTOOLBOX_DEFAULT_VIDEO_BITRATE_KBPS
+  return clampSplitTargetVideoBitrateKbps(referenceBitrateKbps)
+}
+
+async function tryRecoverSizeSplitTranscodeResult(options: {
+  maxOutputSizeBytes: number | null
+  outputPath: string
+  errorMessage: string
+}): Promise<boolean> {
+  const { maxOutputSizeBytes, outputPath, errorMessage } = options
+  if (!maxOutputSizeBytes || !Number.isFinite(maxOutputSizeBytes) || maxOutputSizeBytes <= 0) {
+    return false
+  }
+
+  return isRecoverableSizeSplitFfmpegFailure({
+    outputPath,
+    errorMessage,
+    stderrOutput: ''
+  })
+}
+
 function resolveLutFallbackAudioBitrateKbps(sourceAudioBitRateKbps: number | null): number {
   const candidate = sourceAudioBitRateKbps && Number.isFinite(sourceAudioBitRateKbps)
     ? Math.round(sourceAudioBitRateKbps)
@@ -1092,6 +1240,9 @@ function buildConvertEncoderAttempts(options: {
   const shouldUseHardware = performanceMode === 'auto'
 
   const pushEncoder = (encoder: ConvertEncoderConfig) => {
+    if (!isFfmpegEncoderSupported(encoder.videoCodec)) {
+      return
+    }
     const duplicated = attempts.some((item) => item.name === encoder.name && item.videoCodec === encoder.videoCodec)
     if (!duplicated) {
       attempts.push(encoder)
@@ -1164,9 +1315,8 @@ function buildConvertEncoderAttempts(options: {
           name: 'h264_videotoolbox',
           videoCodec: 'h264_videotoolbox',
           inputOptions: DARWIN_VIDEOTOOLBOX_INPUT_OPTIONS,
-          outputOptions: ({ crf }) => [
+          outputOptions: () => [
             '-allow_sw', '0',
-            '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`,
             ...DARWIN_VIDEOTOOLBOX_SPEED_OUTPUT_OPTIONS
           ]
         })
@@ -1175,9 +1325,8 @@ function buildConvertEncoderAttempts(options: {
           name: 'hevc_videotoolbox',
           videoCodec: 'hevc_videotoolbox',
           inputOptions: DARWIN_VIDEOTOOLBOX_INPUT_OPTIONS,
-          outputOptions: ({ crf }) => [
+          outputOptions: () => [
             '-allow_sw', '0',
-            '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`,
             ...DARWIN_VIDEOTOOLBOX_SPEED_OUTPUT_OPTIONS
           ]
         })
@@ -1316,7 +1465,7 @@ async function createPreviewProxy(filePath: string, options?: {
   const baseName = path.basename(filePath, path.extname(filePath))
   const proxyPath = path.join(previewDir, `${baseName}_preview_${Date.now()}.mp4`)
   const previewFilterGraph = buildPreviewFilterGraph(lutPath, lutIntensity)
-  const encoderAttempts = process.platform === 'win32'
+  let encoderAttempts = process.platform === 'win32'
     ? [
       PREVIEW_WINDOWS_NVENC_ENCODER,
       PREVIEW_WINDOWS_QSV_ENCODER,
@@ -1326,6 +1475,9 @@ async function createPreviewProxy(filePath: string, options?: {
     : process.platform === 'darwin'
       ? [PREVIEW_DARWIN_VIDEOTOOLBOX_ENCODER, PREVIEW_SOFTWARE_ENCODER]
       : [PREVIEW_SOFTWARE_ENCODER]
+  if (process.platform === 'darwin') {
+    encoderAttempts = encoderAttempts.filter((encoder) => isFfmpegEncoderSupported(encoder.videoCodec))
+  }
 
   let lastErrorMessage = 'Failed to build preview proxy'
 
@@ -1720,6 +1872,14 @@ async function exportSingleConvertedVideo(options: {
   const threadCount = resolveConvertThreadCount()
   const encoderAttempts = buildConvertEncoderAttempts({ videoCodec, performanceMode })
   const muxerFormat = CONVERT_FORMAT_MUXER_MAP[format]
+  const targetDurationSec = clipDurationSec && Number.isFinite(clipDurationSec) && clipDurationSec > 0
+    ? clipDurationSec
+    : durationSec
+  const splitTargetVideoBitrateKbps = resolveSplitTargetVideoBitrateKbps({
+    maxOutputSizeBytes,
+    durationSec: targetDurationSec ?? null,
+    audioCodec
+  })
   if (encoderAttempts.length === 0) {
     throw new Error('No available encoder for selected codec and performance mode')
   }
@@ -1734,16 +1894,30 @@ async function exportSingleConvertedVideo(options: {
     }
 
     attemptedCount += 1
+    const shouldUseDarwinVideoToolboxBitrateControl = isDarwinBitrateControlledVideoToolboxCodec(encoder.videoCodec)
     const targetPixFmt = videoCodec === 'prores' ? 'yuv422p10le' : 'yuv420p'
     const outputOptions = [
       '-threads', `${threadCount}`,
       '-pix_fmt', targetPixFmt,
       ...encoder.outputOptions({ crf })
     ]
+    if (splitTargetVideoBitrateKbps) {
+      outputOptions.push(
+        ...(shouldUseDarwinVideoToolboxBitrateControl
+          ? buildDarwinVideoToolboxTargetBitrateOptions(splitTargetVideoBitrateKbps)
+          : buildSplitTargetVideoBitrateOptions(splitTargetVideoBitrateKbps))
+      )
+    } else if (shouldUseDarwinVideoToolboxBitrateControl) {
+      const fallbackBitrateKbps = resolveDarwinVideoToolboxVideoBitrateKbps(sourceVideoBitRateKbps)
+      outputOptions.push(...buildDarwinVideoToolboxTargetBitrateOptions(fallbackBitrateKbps))
+    }
     const lutFilterGraph = buildLutFilterGraph(lutPath, lutIntensity)
     if (lutFilterGraph) {
       outputOptions.push('-vf', lutFilterGraph)
-      if (sourceVideoBitRateKbps && sourceVideoBitRateKbps > 0) {
+      if (!splitTargetVideoBitrateKbps
+        && !shouldUseDarwinVideoToolboxBitrateControl
+        && sourceVideoBitRateKbps
+        && sourceVideoBitRateKbps > 0) {
         outputOptions.push(...buildLutExportVideoBitrateOptions(sourceVideoBitRateKbps))
       }
     }
@@ -1770,14 +1944,14 @@ async function exportSingleConvertedVideo(options: {
         .videoCodec(encoder.videoCodec)
         .outputOptions(outputOptions)
         .on('progress', (progress) => {
-          let percent = typeof progress.percent === 'number' ? progress.percent : null
-          if ((percent === null || !Number.isFinite(percent)) && durationSec && durationSec > 0) {
-            const processedSeconds = parseTimemarkToSeconds(progress.timemark)
-            if (processedSeconds !== null) {
-              percent = (processedSeconds / durationSec) * 100
-            }
+          const processedSeconds = parseTimemarkToSeconds(progress.timemark)
+          if (processedSeconds !== null && durationSec && durationSec > 0) {
+            const timemarkPercent = (processedSeconds / durationSec) * 100
+            onProgress?.(Math.min(100, Math.max(0, timemarkPercent)))
+            return
           }
 
+          const percent = typeof progress.percent === 'number' ? progress.percent : null
           if (percent !== null && Number.isFinite(percent)) {
             onProgress?.(Math.min(100, Math.max(0, percent)))
           }
@@ -1805,6 +1979,15 @@ async function exportSingleConvertedVideo(options: {
       return
     } catch (error: unknown) {
       lastErrorMessage = getErrorMessage(error)
+      const recovered = await tryRecoverSizeSplitTranscodeResult({
+        maxOutputSizeBytes,
+        outputPath,
+        errorMessage: lastErrorMessage
+      })
+      if (recovered) {
+        console.warn(`[BatchClip] Recovered size-split converted clip from non-zero ffmpeg exit: ${outputPath}`)
+        return
+      }
       await removeFileIfExists(outputPath)
       if (shouldAbortEncoderFallback(error, jobId)) {
         throw createJobCanceledError()
@@ -1818,6 +2001,15 @@ async function exportSingleConvertedVideo(options: {
             return
           } catch (fallbackError: unknown) {
             lastErrorMessage = getErrorMessage(fallbackError)
+            const fallbackRecovered = await tryRecoverSizeSplitTranscodeResult({
+              maxOutputSizeBytes,
+              outputPath,
+              errorMessage: lastErrorMessage
+            })
+            if (fallbackRecovered) {
+              console.warn(`[BatchClip] Recovered size-split converted clip from non-zero ffmpeg exit: ${outputPath}`)
+              return
+            }
             await removeFileIfExists(outputPath)
             if (shouldAbortEncoderFallback(fallbackError, jobId)) {
               throw createJobCanceledError()
@@ -1849,6 +2041,7 @@ async function exportSingleSizeSplitClip(options: {
   startSec: number
   targetSizeBytes: number
   transcodeSettings?: ExportTranscodeSettings | null
+  sourceVideoBitRateKbps?: number | null
   estimatedDurationSec?: number
   jobId?: string | null
   onProgress?: (processedSeconds: number) => void
@@ -1859,6 +2052,7 @@ async function exportSingleSizeSplitClip(options: {
     startSec,
     targetSizeBytes,
     transcodeSettings = null,
+    sourceVideoBitRateKbps = null,
     estimatedDurationSec = 0,
     jobId = null,
     onProgress
@@ -1874,7 +2068,9 @@ async function exportSingleSizeSplitClip(options: {
       crf: transcodeSettings.crf,
       performanceMode: transcodeSettings.performanceMode,
       startSec,
+      clipDurationSec: estimatedDurationSec > 0 ? estimatedDurationSec : null,
       maxOutputSizeBytes: targetSizeBytes,
+      sourceVideoBitRateKbps,
       durationSec: estimatedDurationSec > 0 ? estimatedDurationSec : null,
       jobId,
       onProgress: (percent) => {
@@ -2359,6 +2555,7 @@ ipcMain.handle('process-size-split', async (event, {
 
     const estimatedTotalClips = Math.max(1, Math.ceil(sourceStat.size / targetSizeBytes))
     const sourceBitRateKbps = resolveSourceBitRateKbps(sourceInfo)
+    const sourceVideoBitRateKbps = resolveSourceVideoBitRateKbps(sourceInfo)
     const estimatedClipDurationSec = sourceBitRateKbps && sourceBitRateKbps > 0
       ? (targetSizeBytes * 8) / (sourceBitRateKbps * 1000)
       : totalDurationSec / estimatedTotalClips
@@ -2400,6 +2597,7 @@ ipcMain.handle('process-size-split', async (event, {
         startSec: clipStartSec,
         targetSizeBytes,
         transcodeSettings: splitTranscodeSettings,
+        sourceVideoBitRateKbps,
         estimatedDurationSec: safeEstimatedClipDurationSec,
         jobId: progressJobId,
         onProgress: reportSplitProgress
@@ -2411,12 +2609,17 @@ ipcMain.handle('process-size-split', async (event, {
         throw new Error(`Split clip ${clipIndex} is empty`)
       }
 
-      let clipDurationSec: number | null = null
-      try {
-        const clipInfo = await probeVideoInfo(outputPath)
-        clipDurationSec = clipInfo.durationSec
-      } catch {
-        clipDurationSec = null
+      const canTrustProgressDuration = !splitTranscodeSettings
+      let clipDurationSec: number | null = canTrustProgressDuration && maxProcessedSeconds > MIN_SPLIT_CLIP_DURATION_SEC
+        ? maxProcessedSeconds
+        : null
+      if (clipDurationSec === null) {
+        try {
+          const clipInfo = await probeVideoInfo(outputPath)
+          clipDurationSec = clipInfo.durationSec
+        } catch {
+          clipDurationSec = null
+        }
       }
 
       const safeClipDurationSec = clipDurationSec && Number.isFinite(clipDurationSec) && clipDurationSec > MIN_SPLIT_CLIP_DURATION_SEC
@@ -2503,7 +2706,8 @@ ipcMain.handle('process-batch', async (event, {
   let sourceInfo: ProbeVideoInfo | null = null
   let sourceVideoBitRateKbps: number | null = null
   let sourceAudioBitRateKbps: number | null = null
-  if (shouldApplyLut) {
+  const shouldProbeSourceBitrates = shouldApplyLut || normalizedDefaultExportPreference.mode === 'transcode'
+  if (shouldProbeSourceBitrates) {
     const probeResult = await probeSourceInfoWithBitrates(filePath)
     sourceInfo = probeResult.info
     sourceVideoBitRateKbps = probeResult.sourceVideoBitRateKbps
@@ -2848,13 +3052,9 @@ ipcMain.handle('process-convert-batch', async (event, {
       try {
         const baseName = path.basename(entry.filePath, path.extname(entry.filePath))
         const outputPath = await buildUniqueOutputPath(outputDir, `${baseName}_convert`, outputExtension)
-        let durationSec: number | null = null
-        try {
-          const probeInfo = await probeVideoInfo(entry.filePath)
-          durationSec = probeInfo.durationSec
-        } catch {
-          durationSec = null
-        }
+        const probeResult = await probeSourceInfoWithBitrates(entry.filePath)
+        const durationSec = probeResult.info.durationSec
+        const sourceVideoBitRateKbps = probeResult.sourceVideoBitRateKbps
 
         let maxVideoPercent = 0
         const emitVideoProgress = (videoPercent: number) => {
@@ -2871,6 +3071,7 @@ ipcMain.handle('process-convert-batch', async (event, {
           audioCodec: effectiveAudioCodec,
           crf: normalizedCrf,
           performanceMode: normalizedPerformanceMode,
+          sourceVideoBitRateKbps,
           durationSec,
           jobId: progressJobId,
           onProgress: emitVideoProgress

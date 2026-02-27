@@ -25,6 +25,16 @@ interface UseQuickSplitBySizeResult {
   runQuickSplitBySize: () => Promise<void>;
 }
 
+const resolveQuickSplitParallelism = (videoCount: number): number => {
+  if (videoCount <= 0) {
+    return 1;
+  }
+
+  const hardwareThreadCount = Number(navigator.hardwareConcurrency || 0);
+  const preferredParallelism = Number.isFinite(hardwareThreadCount) && hardwareThreadCount >= 8 ? 3 : 2;
+  return Math.max(1, Math.min(videoCount, preferredParallelism));
+};
+
 // EN: Encapsulates "split by target size" quick action state + side effects.
 // ZH: 封装“按目标体积分割”快捷功能的状态与副作用，便于独立维护。
 export const useQuickSplitBySize = ({
@@ -111,8 +121,16 @@ export const useQuickSplitBySize = ({
 
       exportController.clearExportProgressTimer();
       const jobId = `split-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const videoJobs = quickSplitSourceVideos.map((videoItem, index) => ({
+        videoItem,
+        subJobId: `${jobId}:${index + 1}`
+      }));
       exportController.activeExportJobIdRef.current = jobId;
-      exportController.activeExportContextRef.current = null;
+      exportController.activeExportContextRef.current = {
+        mode: 'multi',
+        totalClips: videoJobs.length,
+        clipProgressByJobId: Object.fromEntries(videoJobs.map((item) => [item.subJobId, 0]))
+      };
       exportController.setExportMode('split');
       exportController.setExportProgressPercent(0);
       exportController.setExportProgressClip({ current: 0, total: quickSplitSourceVideos.length });
@@ -121,26 +139,21 @@ export const useQuickSplitBySize = ({
       let splitCanceled = false;
       let totalSuccessCount = 0;
       const failedVideoDetails: Array<{ name: string; reason: string }> = [];
+      const maxParallelJobs = resolveQuickSplitParallelism(videoJobs.length);
 
       try {
-        for (let index = 0; index < quickSplitSourceVideos.length; index += 1) {
-          const videoItem = quickSplitSourceVideos[index];
-          exportController.activeExportContextRef.current = {
-            clipOffset: index,
-            clipCount: 1,
-            totalClips: quickSplitSourceVideos.length
-          };
-
+        let nextJobIndex = 0;
+        const runSingleSplitJob = async (videoItem: QuickLutBatchVideoItem, subJobId: string) => {
           const result = await window.ipcRenderer.processSizeSplit({
             filePath: videoItem.filePath,
             outputDir,
             targetSizeMb: normalizedTargetSizeMb,
             defaultExportPreference,
-            jobId
+            jobId: subJobId
           });
           if (result.canceled) {
             splitCanceled = true;
-            break;
+            return;
           }
 
           const successCount = result.results.filter((item) => item.success).length;
@@ -159,7 +172,27 @@ export const useQuickSplitBySize = ({
               reason: normalizedReason
             });
           }
-        }
+        };
+
+        const runWorker = async () => {
+          while (nextJobIndex < videoJobs.length) {
+            if (splitCanceled) {
+              return;
+            }
+
+            const currentJobIndex = nextJobIndex;
+            nextJobIndex += 1;
+            if (currentJobIndex >= videoJobs.length) {
+              return;
+            }
+
+            const currentJob = videoJobs[currentJobIndex];
+            await runSingleSplitJob(currentJob.videoItem, currentJob.subJobId);
+          }
+        };
+
+        const workerCount = Math.max(1, Math.min(videoJobs.length, maxParallelJobs));
+        await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
 
         if (splitCanceled) {
           alert(t('exportCanceled'));

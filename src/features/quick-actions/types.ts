@@ -48,6 +48,21 @@ export interface QuickConvertCustomTemplate {
 
 export type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 
+export interface SingleExportProgressContext {
+  mode: 'single';
+  clipOffset: number;
+  clipCount: number;
+  totalClips: number;
+}
+
+export interface MultiExportProgressContext {
+  mode: 'multi';
+  totalClips: number;
+  clipProgressByJobId: Record<string, number>;
+}
+
+export type ExportProgressContext = SingleExportProgressContext | MultiExportProgressContext;
+
 export interface ExportProgressController {
   clearExportProgressTimer: () => void;
   setExportMode: Dispatch<SetStateAction<ExportMode>>;
@@ -55,6 +70,6 @@ export interface ExportProgressController {
   setExportProgressClip: Dispatch<SetStateAction<ExportProgressClip>>;
   setIsExporting: Dispatch<SetStateAction<boolean>>;
   activeExportJobIdRef: MutableRefObject<string | null>;
-  activeExportContextRef: MutableRefObject<{ clipOffset: number; clipCount: number; totalClips: number } | null>;
+  activeExportContextRef: MutableRefObject<ExportProgressContext | null>;
   exportProgressHideTimerRef: MutableRefObject<number | null>;
 }

@@ -2,7 +2,7 @@
 import type { VideoPlayerRef } from './components/VideoPlayer';
 import { QuickLutPreviewVideoListModal } from './components/quick-actions/QuickLutBatchFeature';
 import { VIDEO_FILE_ACCEPT, getFileNameFromPath, isSupportedVideoFile, toFileUrl } from './lib/video';
-import type { DefaultExportPreference, ExportProgressController } from './features/quick-actions/types';
+import type { DefaultExportPreference, ExportProgressContext, ExportProgressController } from './features/quick-actions/types';
 import { useQuickSplitBySize } from './features/quick-actions/hooks/useQuickSplitBySize';
 import { useQuickLutBatch } from './features/quick-actions/hooks/useQuickLutBatch';
 import { useQuickConvertBatch } from './features/quick-actions/hooks/useQuickConvertBatch';
@@ -292,7 +292,7 @@ function App() {
   const previewProxyPathRef = useRef<string | null>(null);
   const activePreviewJobIdRef = useRef<string | null>(null);
   const activeExportJobIdRef = useRef<string | null>(null);
-  const activeExportContextRef = useRef<{ clipOffset: number; clipCount: number; totalClips: number } | null>(null);
+  const activeExportContextRef = useRef<ExportProgressContext | null>(null);
   const isPreparingPreviewRef = useRef(false);
   const previewProgressHideTimerRef = useRef<number | null>(null);
   const exportProgressHideTimerRef = useRef<number | null>(null);
@@ -858,12 +858,32 @@ function App() {
         return;
       }
 
+      const context = activeExportContextRef.current;
+      if (context?.mode === 'multi') {
+        if (!(payload.jobId in context.clipProgressByJobId)) {
+          return;
+        }
+
+        const safePercent = Math.min(100, Math.max(0, payload.percent));
+        context.clipProgressByJobId[payload.jobId] = safePercent;
+        const perJobProgressList = Object.values(context.clipProgressByJobId);
+        const totalClips = Math.max(1, context.totalClips);
+        const overallPercent = perJobProgressList.reduce((sum, value) => sum + value, 0) / totalClips;
+        const completedClipCount = perJobProgressList.filter((value) => value >= 100).length;
+
+        setExportProgressPercent(Math.min(100, Math.max(0, overallPercent)));
+        setExportProgressClip({
+          current: Math.min(context.totalClips, completedClipCount),
+          total: context.totalClips
+        });
+        return;
+      }
+
       if (payload.jobId !== activeExportJobIdRef.current) {
         return;
       }
 
-      const context = activeExportContextRef.current;
-      if (!context || context.totalClips <= 0) {
+      if (!context || context.mode !== 'single' || context.totalClips <= 0) {
         setExportProgressPercent(Math.min(100, Math.max(0, payload.percent)));
         setExportProgressClip({
           current: payload.currentClip,
@@ -1248,6 +1268,7 @@ function App() {
           const jobId = `export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           activeExportJobIdRef.current = jobId;
           activeExportContextRef.current = {
+            mode: 'single',
             clipOffset,
             clipCount: queueItem.segments.length,
             totalClips: totalQueueClipCount
