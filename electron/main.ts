@@ -1156,29 +1156,25 @@ function buildConvertEncoderAttempts(options: {
         pushEncoder({
           name: 'h264_videotoolbox',
           videoCodec: 'h264_videotoolbox',
-          inputOptions: ['-hwaccel', 'videotoolbox'],
-          outputOptions: ({ crf }) => ['-allow_sw', '1', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
+          outputOptions: ({ crf }) => ['-allow_sw', '0', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
         })
       } else if (videoCodec === 'hevc') {
         pushEncoder({
           name: 'hevc_videotoolbox',
           videoCodec: 'hevc_videotoolbox',
-          inputOptions: ['-hwaccel', 'videotoolbox'],
-          outputOptions: ({ crf }) => ['-allow_sw', '1', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
+          outputOptions: ({ crf }) => ['-allow_sw', '0', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
         })
       } else if (videoCodec === 'av1') {
         pushEncoder({
           name: 'av1_videotoolbox',
           videoCodec: 'av1_videotoolbox',
-          inputOptions: ['-hwaccel', 'videotoolbox'],
-          outputOptions: ({ crf }) => ['-allow_sw', '1', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
+          outputOptions: ({ crf }) => ['-allow_sw', '0', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
         })
       } else if (videoCodec === 'prores') {
         pushEncoder({
           name: 'prores_videotoolbox',
           videoCodec: 'prores_videotoolbox',
-          inputOptions: ['-hwaccel', 'videotoolbox'],
-          outputOptions: () => ['-allow_sw', '1', '-profile:v', '3']
+          outputOptions: () => ['-allow_sw', '0', '-profile:v', '3']
         })
       }
     }
