@@ -153,6 +153,9 @@ const PREVIEW_COMMON_OUTPUT_OPTIONS = [
   '-movflags', '+faststart'
 ]
 
+const DARWIN_VIDEOTOOLBOX_INPUT_OPTIONS = ['-hwaccel', 'videotoolbox']
+const DARWIN_VIDEOTOOLBOX_SPEED_OUTPUT_OPTIONS = ['-realtime', '1', '-prio_speed', '1']
+
 const PREVIEW_SOFTWARE_ENCODER: PreviewEncoderConfig = {
   name: 'libx264',
   videoCodec: 'libx264',
@@ -180,8 +183,8 @@ const PREVIEW_WINDOWS_AMF_ENCODER: PreviewEncoderConfig = {
 const PREVIEW_DARWIN_VIDEOTOOLBOX_ENCODER: PreviewEncoderConfig = {
   name: 'h264_videotoolbox',
   videoCodec: 'h264_videotoolbox',
-  inputOptions: ['-hwaccel', 'videotoolbox'],
-  outputOptions: ['-allow_sw', '1', '-q:v', '55']
+  inputOptions: DARWIN_VIDEOTOOLBOX_INPUT_OPTIONS,
+  outputOptions: ['-allow_sw', '1', '-q:v', '55', ...DARWIN_VIDEOTOOLBOX_SPEED_OUTPUT_OPTIONS]
 }
 
 const EXPORT_PRIMARY_X264_PRESET = process.env.BATCHCLIP_EXPORT_PRESET || 'medium'
@@ -214,8 +217,8 @@ const EXPORT_WINDOWS_AMF_ENCODER: ExportEncoderConfig = {
 const EXPORT_DARWIN_VIDEOTOOLBOX_ENCODER: ExportEncoderConfig = {
   name: 'h264_videotoolbox',
   videoCodec: 'h264_videotoolbox',
-  inputOptions: ['-hwaccel', 'videotoolbox'],
-  outputOptions: ['-allow_sw', '1']
+  inputOptions: DARWIN_VIDEOTOOLBOX_INPUT_OPTIONS,
+  outputOptions: ['-allow_sw', '1', ...DARWIN_VIDEOTOOLBOX_SPEED_OUTPUT_OPTIONS]
 }
 
 const LUT_EXPORT_VIDEO_BITRATE_SCALE = 1.12
@@ -380,6 +383,10 @@ function isJobCanceledError(error: unknown): boolean {
   }
 
   return error.name === 'BatchClipJobCanceledError' || error.message === JOB_CANCELED_ERROR_MESSAGE
+}
+
+function shouldAbortEncoderFallback(error: unknown, jobId: string | null): boolean {
+  return isJobCanceledError(error) || isJobMarkedCanceled(jobId)
 }
 
 function throwIfJobCanceled(jobId: string | null): void {
@@ -1156,25 +1163,41 @@ function buildConvertEncoderAttempts(options: {
         pushEncoder({
           name: 'h264_videotoolbox',
           videoCodec: 'h264_videotoolbox',
-          outputOptions: ({ crf }) => ['-allow_sw', '0', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
+          inputOptions: DARWIN_VIDEOTOOLBOX_INPUT_OPTIONS,
+          outputOptions: ({ crf }) => [
+            '-allow_sw', '0',
+            '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`,
+            ...DARWIN_VIDEOTOOLBOX_SPEED_OUTPUT_OPTIONS
+          ]
         })
       } else if (videoCodec === 'hevc') {
         pushEncoder({
           name: 'hevc_videotoolbox',
           videoCodec: 'hevc_videotoolbox',
-          outputOptions: ({ crf }) => ['-allow_sw', '0', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
+          inputOptions: DARWIN_VIDEOTOOLBOX_INPUT_OPTIONS,
+          outputOptions: ({ crf }) => [
+            '-allow_sw', '0',
+            '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`,
+            ...DARWIN_VIDEOTOOLBOX_SPEED_OUTPUT_OPTIONS
+          ]
         })
       } else if (videoCodec === 'av1') {
         pushEncoder({
           name: 'av1_videotoolbox',
           videoCodec: 'av1_videotoolbox',
-          outputOptions: ({ crf }) => ['-allow_sw', '0', '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`]
+          inputOptions: DARWIN_VIDEOTOOLBOX_INPUT_OPTIONS,
+          outputOptions: ({ crf }) => [
+            '-allow_sw', '0',
+            '-q:v', `${mapCrfToVideoToolboxQuality(crf)}`,
+            ...DARWIN_VIDEOTOOLBOX_SPEED_OUTPUT_OPTIONS
+          ]
         })
       } else if (videoCodec === 'prores') {
         pushEncoder({
           name: 'prores_videotoolbox',
           videoCodec: 'prores_videotoolbox',
-          outputOptions: () => ['-allow_sw', '0', '-profile:v', '3']
+          inputOptions: DARWIN_VIDEOTOOLBOX_INPUT_OPTIONS,
+          outputOptions: () => ['-allow_sw', '0', '-profile:v', '3', ...DARWIN_VIDEOTOOLBOX_SPEED_OUTPUT_OPTIONS]
         })
       }
     }
@@ -1348,6 +1371,9 @@ async function createPreviewProxy(filePath: string, options?: {
     } catch (error: unknown) {
       lastErrorMessage = getErrorMessage(error)
       await removeFileIfExists(proxyPath)
+      if (shouldAbortEncoderFallback(error, jobId)) {
+        throw createJobCanceledError()
+      }
 
       if (index < encoderAttempts.length - 1) {
         console.warn(`[BatchClip] Preview proxy encoder "${encoder.name}" failed, trying fallback.`, error)
@@ -1492,6 +1518,9 @@ async function exportSingleClip(options: {
     } catch (copyError: unknown) {
       const copyErrorMessage = getErrorMessage(copyError)
       await removeFileIfExists(outputPath)
+      if (shouldAbortEncoderFallback(copyError, jobId)) {
+        throw createJobCanceledError()
+      }
 
       if (isUnsupportedEncoderError(copyErrorMessage)) {
         lastErrorMessage = copyErrorMessage
@@ -1507,6 +1536,9 @@ async function exportSingleClip(options: {
       } catch (aacError: unknown) {
         lastErrorMessage = getErrorMessage(aacError)
         await removeFileIfExists(outputPath)
+        if (shouldAbortEncoderFallback(aacError, jobId)) {
+          throw createJobCanceledError()
+        }
 
         if (index < encoderAttempts.length - 1) {
           const errorToLog = isLikelyAudioCopyFailure(copyErrorMessage) ? aacError : copyError
@@ -1615,6 +1647,9 @@ async function exportSingleFullVideo(options: {
     } catch (copyError: unknown) {
       const copyErrorMessage = getErrorMessage(copyError)
       await removeFileIfExists(outputPath)
+      if (shouldAbortEncoderFallback(copyError, jobId)) {
+        throw createJobCanceledError()
+      }
 
       if (isUnsupportedEncoderError(copyErrorMessage)) {
         lastErrorMessage = copyErrorMessage
@@ -1630,6 +1665,9 @@ async function exportSingleFullVideo(options: {
       } catch (aacError: unknown) {
         lastErrorMessage = getErrorMessage(aacError)
         await removeFileIfExists(outputPath)
+        if (shouldAbortEncoderFallback(aacError, jobId)) {
+          throw createJobCanceledError()
+        }
 
         if (index < encoderAttempts.length - 1) {
           const errorToLog = isLikelyAudioCopyFailure(copyErrorMessage) ? aacError : copyError
@@ -1768,6 +1806,9 @@ async function exportSingleConvertedVideo(options: {
     } catch (error: unknown) {
       lastErrorMessage = getErrorMessage(error)
       await removeFileIfExists(outputPath)
+      if (shouldAbortEncoderFallback(error, jobId)) {
+        throw createJobCanceledError()
+      }
 
       if (audioCodec === 'copy' && isLikelyAudioCopyFailure(lastErrorMessage)) {
         const fallbackAudioCodec = ensureCompatibleConvertAudioCodec(format, CONVERT_FORMAT_DEFAULT_AUDIO_CODEC[format])
@@ -1778,6 +1819,9 @@ async function exportSingleConvertedVideo(options: {
           } catch (fallbackError: unknown) {
             lastErrorMessage = getErrorMessage(fallbackError)
             await removeFileIfExists(outputPath)
+            if (shouldAbortEncoderFallback(fallbackError, jobId)) {
+              throw createJobCanceledError()
+            }
           }
         }
       }
