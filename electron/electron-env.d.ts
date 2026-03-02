@@ -115,6 +115,30 @@ interface Window {
       }>;
     }>;
 
+    processLivePhotoBatch: (opts: {
+      videos: { id: string; filePath: string }[];
+      outputDir: string;
+      coverPositionPercent?: number;
+      motionDurationSec?: number;
+      jobId?: string;
+    }) => Promise<{
+      success: boolean;
+      canceled?: boolean;
+      error?: string;
+      warnings?: string[];
+      settings?: {
+        coverPositionPercent: number;
+        motionDurationSec: number;
+      };
+      results: Array<{
+        id: string;
+        success: boolean;
+        photoPath?: string;
+        videoPath?: string;
+        error?: string;
+      }>;
+    }>;
+
     preparePreview: (opts: {
       filePath: string;
       forceProxy?: boolean;

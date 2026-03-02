@@ -70,6 +70,14 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     jobId?: string
   }) => ipcRenderer.invoke('process-convert-batch', opts),
 
+  processLivePhotoBatch: (opts: {
+    videos: { id: string; filePath: string }[],
+    outputDir: string,
+    coverPositionPercent?: number,
+    motionDurationSec?: number,
+    jobId?: string
+  }) => ipcRenderer.invoke('process-live-photo-batch', opts),
+
   preparePreview: (opts: {
     filePath: string,
     forceProxy?: boolean,

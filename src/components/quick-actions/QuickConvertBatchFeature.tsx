@@ -97,7 +97,7 @@ interface QuickConvertBatchFeatureProps {
   onCloseGuide: () => void;
   onRun: () => void;
   isExporting: boolean;
-  exportMode: 'clips' | 'full' | 'split' | 'convert';
+  exportMode: 'clips' | 'full' | 'split' | 'convert' | 'livephoto';
   exportProgressPercent: number | null;
 }
 

@@ -6,7 +6,7 @@ Ever struggled with files too large to upload or share? Overwhelmed by too much 
 
 BatchClip is a desktop video batch-processing tool built with Electron + React + TypeScript, designed for efficient export workflows with multiple videos, multiple segments, and optional LUTs. It supports precise editing in the main workspace (including video segment labeling) and quick batch operations on the landing screen (Split / LUT / Convert).
 
-Current version: `v1.0.6`
+Current version: `v1.0.7`
 
 ![UI Screenshot](./docs/screenshot00.png)
 ![UI Screenshot](./docs/screenshot01.png)

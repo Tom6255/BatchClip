@@ -39,7 +39,10 @@ interface UseQuickLutBatchResult {
   quickLutBatchLutPath: string;
   setQuickLutBatchLutPath: Dispatch<SetStateAction<string>>;
   quickLutBatchLutIntensity: number;
-  setQuickLutBatchLutIntensity: Dispatch<SetStateAction<number>>;
+  quickLutBatchLutIntensityDraft: number;
+  quickLutBatchHasPendingLutIntensity: boolean;
+  updateQuickLutBatchLutIntensity: (value: number) => void;
+  applyQuickLutBatchLutIntensity: () => void;
   quickLutRealtimePreviewEnabled: boolean;
   setQuickLutRealtimePreviewEnabled: Dispatch<SetStateAction<boolean>>;
   quickLutPreviewVideoId: string | null;
@@ -90,6 +93,7 @@ export const useQuickLutBatch = ({
   const [quickLutBatchVideos, setQuickLutBatchVideos] = useState<QuickLutBatchVideoItem[]>([]);
   const [quickLutBatchLutPath, setQuickLutBatchLutPath] = useState('');
   const [quickLutBatchLutIntensity, setQuickLutBatchLutIntensity] = useState(defaultLutIntensity);
+  const [quickLutBatchLutIntensityDraft, setQuickLutBatchLutIntensityDraft] = useState(defaultLutIntensity);
   const [quickLutRealtimePreviewEnabled, setQuickLutRealtimePreviewEnabled] = useState(true);
   const [quickLutPreviewVideoId, setQuickLutPreviewVideoId] = useState<string | null>(null);
   const [quickLutPreviewSrc, setQuickLutPreviewSrc] = useState('');
@@ -105,10 +109,13 @@ export const useQuickLutBatch = ({
 
   const quickLutPreviewPlayerRef = useRef<VideoPlayerRef>(null);
   const quickLutPreviewProxyPathRef = useRef<string | null>(null);
+  const quickLutPreviewProxyLutPathRef = useRef('');
+  const quickLutPreviewProxyLutIntensityRef = useRef(clampLutIntensity(defaultLutIntensity));
   const quickLutPreviewJobIdRef = useRef<string | null>(null);
   const quickLutPreviewPreparingRef = useRef(false);
   const quickLutPreviewProgressHideTimerRef = useRef<number | null>(null);
   const quickLutPreviewAutoFallbackTriedRef = useRef(false);
+  const quickLutBatchHasPendingLutIntensity = quickLutBatchLutIntensityDraft !== quickLutBatchLutIntensity;
 
   const clearQuickLutPreviewProgressTimer = useCallback(() => {
     if (quickLutPreviewProgressHideTimerRef.current !== null) {
@@ -200,6 +207,30 @@ export const useQuickLutBatch = ({
       console.error('Failed to import quick batch LUT file:', error);
     }
   }, []);
+
+  const updateQuickLutBatchLutIntensity = useCallback((value: number) => {
+    const normalizedValue = clampLutIntensity(value);
+    setQuickLutBatchLutIntensityDraft(normalizedValue);
+    if (!quickLutPreviewUsingCompatible) {
+      setQuickLutBatchLutIntensity(normalizedValue);
+    }
+  }, [clampLutIntensity, quickLutPreviewUsingCompatible]);
+
+  const applyQuickLutBatchLutIntensity = useCallback(() => {
+    const normalizedValue = clampLutIntensity(quickLutBatchLutIntensityDraft);
+    setQuickLutBatchLutIntensity(normalizedValue);
+    setQuickLutBatchLutIntensityDraft(normalizedValue);
+  }, [clampLutIntensity, quickLutBatchLutIntensityDraft]);
+
+  useEffect(() => {
+    if (quickLutPreviewUsingCompatible) {
+      return;
+    }
+    if (quickLutBatchLutIntensity === quickLutBatchLutIntensityDraft) {
+      return;
+    }
+    setQuickLutBatchLutIntensity(quickLutBatchLutIntensityDraft);
+  }, [quickLutBatchLutIntensity, quickLutBatchLutIntensityDraft, quickLutPreviewUsingCompatible]);
 
   const runQuickLutBatchExport = useCallback(async () => {
     try {
@@ -322,6 +353,8 @@ export const useQuickLutBatch = ({
     if (!quickLutPreviewFilePath || quickLutPreviewPreparingRef.current || !quickLutRealtimePreviewEnabled) {
       return;
     }
+    const normalizedQuickLutPath = quickLutBatchLutPath.trim();
+    const normalizedQuickLutIntensity = clampLutIntensity(quickLutBatchLutIntensity);
 
     clearQuickLutPreviewProgressTimer();
     const jobId = `quick-preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -335,6 +368,8 @@ export const useQuickLutBatch = ({
       const result = await window.ipcRenderer.preparePreview({
         filePath: quickLutPreviewFilePath,
         forceProxy: true,
+        lutPath: normalizedQuickLutPath || undefined,
+        lutIntensity: normalizedQuickLutIntensity,
         jobId
       });
 
@@ -355,6 +390,8 @@ export const useQuickLutBatch = ({
         }
 
         quickLutPreviewProxyPathRef.current = result.path;
+        quickLutPreviewProxyLutPathRef.current = normalizedQuickLutPath;
+        quickLutPreviewProxyLutIntensityRef.current = normalizedQuickLutIntensity;
         setQuickLutPreviewSrc(result.url);
         setQuickLutPreviewUsingCompatible(true);
         conversionCompleted = true;
@@ -382,7 +419,15 @@ export const useQuickLutBatch = ({
         }
       }
     }
-  }, [cleanupPreviewProxy, clearQuickLutPreviewProgressTimer, quickLutPreviewFilePath, quickLutRealtimePreviewEnabled]);
+  }, [
+    clampLutIntensity,
+    cleanupPreviewProxy,
+    clearQuickLutPreviewProgressTimer,
+    quickLutBatchLutIntensity,
+    quickLutBatchLutPath,
+    quickLutPreviewFilePath,
+    quickLutRealtimePreviewEnabled
+  ]);
 
   const switchToQuickLutCompatiblePreview = useCallback(() => {
     if (!quickLutPreviewFilePath || quickLutPreviewPreparingRef.current || quickLutPreviewUsingCompatible || !quickLutRealtimePreviewEnabled) {
@@ -405,6 +450,32 @@ export const useQuickLutBatch = ({
     switchToQuickLutCompatiblePreview();
   }, [quickLutPreviewFilePath, quickLutPreviewPreparing, quickLutPreviewUsingCompatible, quickLutRealtimePreviewEnabled, switchToQuickLutCompatiblePreview]);
 
+  useEffect(() => {
+    if (!quickLutPreviewUsingCompatible || !quickLutRealtimePreviewEnabled || !quickLutPreviewFilePath) {
+      return;
+    }
+
+    const normalizedQuickLutPath = quickLutBatchLutPath.trim();
+    const normalizedQuickLutIntensity = clampLutIntensity(quickLutBatchLutIntensity);
+    const proxySettingsMatched = (
+      quickLutPreviewProxyLutPathRef.current === normalizedQuickLutPath
+      && quickLutPreviewProxyLutIntensityRef.current === normalizedQuickLutIntensity
+    );
+    if (proxySettingsMatched) {
+      return;
+    }
+
+    void switchToQuickLutProxyPreview();
+  }, [
+    clampLutIntensity,
+    quickLutBatchLutIntensity,
+    quickLutBatchLutPath,
+    quickLutPreviewFilePath,
+    quickLutPreviewUsingCompatible,
+    quickLutRealtimePreviewEnabled,
+    switchToQuickLutProxyPreview
+  ]);
+
   // EN: Auto-refresh preview source when source list / panel visibility / preview mode changes.
   // ZH: 当视频列表、面板状态、实时预览开关变化时，自动刷新预览源。
   useEffect(() => {
@@ -422,6 +493,7 @@ export const useQuickLutBatch = ({
     if (quickLutPreviewProxyPathRef.current) {
       const stalePreviewPath = quickLutPreviewProxyPathRef.current;
       quickLutPreviewProxyPathRef.current = null;
+      quickLutPreviewProxyLutPathRef.current = '';
       void cleanupPreviewProxy(stalePreviewPath);
     }
 
@@ -494,9 +566,11 @@ export const useQuickLutBatch = ({
       quickLutPreviewPreparingRef.current = false;
       const stalePreviewPath = quickLutPreviewProxyPathRef.current;
       quickLutPreviewProxyPathRef.current = null;
+      quickLutPreviewProxyLutPathRef.current = '';
+      quickLutPreviewProxyLutIntensityRef.current = clampLutIntensity(defaultLutIntensity);
       void cleanupPreviewProxy(stalePreviewPath);
     };
-  }, [cleanupPreviewProxy, clearQuickLutPreviewProgressTimer]);
+  }, [clampLutIntensity, cleanupPreviewProxy, clearQuickLutPreviewProgressTimer, defaultLutIntensity]);
 
   const handleQuickLutPreviewSeek = useCallback((nextTime: number) => {
     const maxDuration = Number.isFinite(quickLutPreviewDuration) ? Math.max(0, quickLutPreviewDuration) : 0;
@@ -518,7 +592,10 @@ export const useQuickLutBatch = ({
     quickLutBatchLutPath,
     setQuickLutBatchLutPath,
     quickLutBatchLutIntensity,
-    setQuickLutBatchLutIntensity,
+    quickLutBatchLutIntensityDraft,
+    quickLutBatchHasPendingLutIntensity,
+    updateQuickLutBatchLutIntensity,
+    applyQuickLutBatchLutIntensity,
     quickLutRealtimePreviewEnabled,
     setQuickLutRealtimePreviewEnabled,
     quickLutPreviewVideoId,

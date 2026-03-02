@@ -7,7 +7,7 @@
 
  BatchClip是一个基于 Electron + React + TypeScript 的桌面视频批处理工具，面向“多视频、多片段、可选 LUT”的高效导出流程。支持主编辑工作区精细剪辑（支持视频片段添加标签），也支持首屏快捷批处理（分割 / LUT / 转换）。
 
-当前版本：`v1.0.6`
+当前版本：`v1.0.7`
 
 ![界面截图](./docs/screenshot00.png)
 ![界面截图](./docs/screenshot01.png)

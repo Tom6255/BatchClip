@@ -6,6 +6,7 @@ import type { DefaultExportPreference, ExportProgressContext, ExportProgressCont
 import { useQuickSplitBySize } from './features/quick-actions/hooks/useQuickSplitBySize';
 import { useQuickLutBatch } from './features/quick-actions/hooks/useQuickLutBatch';
 import { useQuickConvertBatch } from './features/quick-actions/hooks/useQuickConvertBatch';
+import { useQuickLivePhotoBatch } from './features/quick-actions/hooks/useQuickLivePhotoBatch';
 import AppHeader from './features/main/components/AppHeader';
 import GlobalStatusBar from './features/main/components/GlobalStatusBar';
 import { useMainSettings, type ThemePreference } from './features/main/hooks/useMainSettings';
@@ -177,10 +178,11 @@ function App() {
     parseStoredDefaultExportPreference
   );
   const [newTagDraft, setNewTagDraft] = useState('');
-  const [activeQuickAction, setActiveQuickAction] = useState<'split-by-size' | 'lut-full-batch' | 'convert-batch' | null>(null);
+  const [activeQuickAction, setActiveQuickAction] = useState<'split-by-size' | 'lut-full-batch' | 'convert-batch' | 'live-photo-batch' | null>(null);
   const isQuickSplitPanelOpen = activeQuickAction === 'split-by-size';
   const isQuickLutBatchPanelOpen = activeQuickAction === 'lut-full-batch';
   const isQuickConvertPanelOpen = activeQuickAction === 'convert-batch';
+  const isQuickLivePhotoPanelOpen = activeQuickAction === 'live-photo-batch';
 
   const {
     useFixedDuration,
@@ -284,7 +286,7 @@ function App() {
   const [previewProgressPercent, setPreviewProgressPercent] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isCancellingExport, setIsCancellingExport] = useState(false);
-  const [exportMode, setExportMode] = useState<'clips' | 'full' | 'split' | 'convert'>('clips');
+  const [exportMode, setExportMode] = useState<'clips' | 'full' | 'split' | 'convert' | 'livephoto'>('clips');
   const [exportProgressPercent, setExportProgressPercent] = useState<number | null>(null);
   const [exportProgressClip, setExportProgressClip] = useState<{ current: number; total: number } | null>(null);
   const [usingCompatiblePreview, setUsingCompatiblePreview] = useState(false);
@@ -710,8 +712,8 @@ function App() {
     }
   }, [isCancellingExport, isExporting]);
 
-  // EN: Shared progress controller for quick actions (split/LUT).
-  // ZH: 快捷功能（分割/LUT）共用的导出进度控制器。
+  // EN: Shared progress controller for quick actions.
+  // ZH: 快捷功能共用的导出进度控制器。
   const exportProgressController = useMemo<ExportProgressController>(() => ({
     clearExportProgressTimer,
     setExportMode,
@@ -753,7 +755,10 @@ function App() {
     quickLutBatchLutPath,
     setQuickLutBatchLutPath,
     quickLutBatchLutIntensity,
-    setQuickLutBatchLutIntensity,
+    quickLutBatchLutIntensityDraft,
+    quickLutBatchHasPendingLutIntensity,
+    updateQuickLutBatchLutIntensity,
+    applyQuickLutBatchLutIntensity,
     quickLutRealtimePreviewEnabled,
     setQuickLutRealtimePreviewEnabled,
     quickLutPreviewVideoId,
@@ -821,6 +826,20 @@ function App() {
     updateQuickConvertPerformanceMode,
     runQuickConvertBatchExport
   } = useQuickConvertBatch({
+    t: tForFeatures,
+    exportController: exportProgressController
+  });
+
+  const {
+    quickLivePhotoBatchVideos,
+    quickLivePhotoSettings,
+    handleQuickLivePhotoBatchVideosChange,
+    clearQuickLivePhotoBatchVideos,
+    removeQuickLivePhotoBatchVideo,
+    updateQuickLivePhotoCoverPositionPercent,
+    updateQuickLivePhotoMotionDurationSec,
+    runQuickLivePhotoBatchExport
+  } = useQuickLivePhotoBatch({
     t: tForFeatures,
     exportController: exportProgressController
   });
@@ -1458,6 +1477,9 @@ function App() {
   const quickConvertVideoCountLabel = t('quickConvertVideoCount', { count: quickConvertBatchVideos.length });
   const quickConvertTotalSizeBytes = quickConvertBatchVideos.reduce((sum, item) => sum + item.sizeBytes, 0);
   const quickConvertTotalSizeLabel = formatFileSize(quickConvertTotalSizeBytes);
+  const quickLivePhotoVideoCountLabel = t('quickLivePhotoVideoCount', { count: quickLivePhotoBatchVideos.length });
+  const quickLivePhotoTotalSizeBytes = quickLivePhotoBatchVideos.reduce((sum, item) => sum + item.sizeBytes, 0);
+  const quickLivePhotoTotalSizeLabel = formatFileSize(quickLivePhotoTotalSizeBytes);
   const quickLutPreviewActiveVideo = quickLutPreviewVideoId
     ? quickLutBatchVideos.find((video) => video.id === quickLutPreviewVideoId) ?? null
     : null;
@@ -1470,6 +1492,8 @@ function App() {
       ? t('quickSplitting')
       : exportMode === 'convert'
         ? t('quickConverting')
+        : exportMode === 'livephoto'
+          ? t('quickLivePhotoConverting')
       : t('exportingClips');
   const cancelExportLabel = t('stopTask');
   const cancelingExportLabel = t('stoppingTask');
@@ -1649,8 +1673,10 @@ function App() {
               void handleQuickLutBatchImportLut();
             }}
             onClearQuickLutBatchLut={() => setQuickLutBatchLutPath('')}
-            quickLutBatchLutIntensity={quickLutBatchLutIntensity}
-            onChangeQuickLutBatchLutIntensity={(value) => setQuickLutBatchLutIntensity(clampLutIntensity(value))}
+            quickLutBatchLutIntensity={quickLutBatchLutIntensityDraft}
+            quickLutBatchHasPendingLutIntensity={quickLutBatchHasPendingLutIntensity}
+            onChangeQuickLutBatchLutIntensity={updateQuickLutBatchLutIntensity}
+            onApplyQuickLutBatchLutIntensity={applyQuickLutBatchLutIntensity}
             onRunQuickLutBatchExport={() => {
               void runQuickLutBatchExport();
             }}
@@ -1690,6 +1716,22 @@ function App() {
             onCloseQuickConvertCodecGuide={() => setShowQuickConvertCodecGuide(false)}
             onRunQuickConvertBatchExport={() => {
               void runQuickConvertBatchExport();
+            }}
+            isQuickLivePhotoPanelOpen={isQuickLivePhotoPanelOpen}
+            onToggleQuickLivePhotoPanel={() => {
+              setActiveQuickAction((prev) => prev === 'live-photo-batch' ? null : 'live-photo-batch');
+            }}
+            quickLivePhotoVideoCountLabel={quickLivePhotoVideoCountLabel}
+            quickLivePhotoTotalSizeLabel={quickLivePhotoTotalSizeLabel}
+            quickLivePhotoBatchVideos={quickLivePhotoBatchVideos}
+            quickLivePhotoSettings={quickLivePhotoSettings}
+            onQuickLivePhotoBatchVideosChange={handleQuickLivePhotoBatchVideosChange}
+            onClearQuickLivePhotoBatchVideos={clearQuickLivePhotoBatchVideos}
+            onRemoveQuickLivePhotoBatchVideo={removeQuickLivePhotoBatchVideo}
+            onChangeQuickLivePhotoCoverPositionPercent={updateQuickLivePhotoCoverPositionPercent}
+            onChangeQuickLivePhotoMotionDurationSec={updateQuickLivePhotoMotionDurationSec}
+            onRunQuickLivePhotoBatchExport={() => {
+              void runQuickLivePhotoBatchExport();
             }}
             isExporting={isExporting}
             exportMode={exportMode}

@@ -5,9 +5,17 @@ import Button from '../../../components/ui/Button';
 import QuickSplitBySizeFeature from '../../../components/quick-actions/QuickSplitBySizeFeature';
 import QuickLutBatchFeature, { QuickLutPreviewOverlay } from '../../../components/quick-actions/QuickLutBatchFeature';
 import QuickConvertBatchFeature from '../../../components/quick-actions/QuickConvertBatchFeature';
+import QuickLivePhotoBatchFeature from '../../../components/quick-actions/QuickLivePhotoBatchFeature';
 import type { VideoPlayerRef } from '../../../components/VideoPlayer';
 import type { TranslationKey } from '../../../i18n/translations';
-import type { QuickConvertBatchSettings, QuickConvertBatchVideoItem, QuickConvertCustomTemplate, QuickLutBatchVideoItem } from '../../quick-actions/types';
+import type {
+  QuickConvertBatchSettings,
+  QuickConvertBatchVideoItem,
+  QuickConvertCustomTemplate,
+  QuickLivePhotoBatchSettings,
+  QuickLivePhotoBatchVideoItem,
+  QuickLutBatchVideoItem
+} from '../../quick-actions/types';
 
 interface MainLandingWorkspaceProps {
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
@@ -71,7 +79,9 @@ interface MainLandingWorkspaceProps {
   onSelectQuickLutBatchLut: () => void;
   onClearQuickLutBatchLut: () => void;
   quickLutBatchLutIntensity: number;
+  quickLutBatchHasPendingLutIntensity: boolean;
   onChangeQuickLutBatchLutIntensity: (value: number) => void;
+  onApplyQuickLutBatchLutIntensity: () => void;
   onRunQuickLutBatchExport: () => void;
   isQuickConvertPanelOpen: boolean;
   onToggleQuickConvertPanel: () => void;
@@ -106,8 +116,20 @@ interface MainLandingWorkspaceProps {
   onOpenQuickConvertCodecGuide: () => void;
   onCloseQuickConvertCodecGuide: () => void;
   onRunQuickConvertBatchExport: () => void;
+  isQuickLivePhotoPanelOpen: boolean;
+  onToggleQuickLivePhotoPanel: () => void;
+  quickLivePhotoVideoCountLabel: string;
+  quickLivePhotoTotalSizeLabel: string;
+  quickLivePhotoBatchVideos: QuickLivePhotoBatchVideoItem[];
+  quickLivePhotoSettings: QuickLivePhotoBatchSettings;
+  onQuickLivePhotoBatchVideosChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onClearQuickLivePhotoBatchVideos: () => void;
+  onRemoveQuickLivePhotoBatchVideo: (videoId: string) => void;
+  onChangeQuickLivePhotoCoverPositionPercent: (value: number) => void;
+  onChangeQuickLivePhotoMotionDurationSec: (value: number) => void;
+  onRunQuickLivePhotoBatchExport: () => void;
   isExporting: boolean;
-  exportMode: 'clips' | 'full' | 'split' | 'convert';
+  exportMode: 'clips' | 'full' | 'split' | 'convert' | 'livephoto';
   exportProgressPercent: number | null;
 }
 
@@ -175,7 +197,9 @@ const MainLandingWorkspace = ({
   onSelectQuickLutBatchLut,
   onClearQuickLutBatchLut,
   quickLutBatchLutIntensity,
+  quickLutBatchHasPendingLutIntensity,
   onChangeQuickLutBatchLutIntensity,
+  onApplyQuickLutBatchLutIntensity,
   onRunQuickLutBatchExport,
   isQuickConvertPanelOpen,
   onToggleQuickConvertPanel,
@@ -210,6 +234,18 @@ const MainLandingWorkspace = ({
   onOpenQuickConvertCodecGuide,
   onCloseQuickConvertCodecGuide,
   onRunQuickConvertBatchExport,
+  isQuickLivePhotoPanelOpen,
+  onToggleQuickLivePhotoPanel,
+  quickLivePhotoVideoCountLabel,
+  quickLivePhotoTotalSizeLabel,
+  quickLivePhotoBatchVideos,
+  quickLivePhotoSettings,
+  onQuickLivePhotoBatchVideosChange,
+  onClearQuickLivePhotoBatchVideos,
+  onRemoveQuickLivePhotoBatchVideo,
+  onChangeQuickLivePhotoCoverPositionPercent,
+  onChangeQuickLivePhotoMotionDurationSec,
+  onRunQuickLivePhotoBatchExport,
   isExporting,
   exportMode,
   exportProgressPercent
@@ -317,7 +353,9 @@ const MainLandingWorkspace = ({
             onSelectLut={onSelectQuickLutBatchLut}
             onClearLut={onClearQuickLutBatchLut}
             quickLutBatchLutIntensity={quickLutBatchLutIntensity}
+            quickLutBatchHasPendingLutIntensity={quickLutBatchHasPendingLutIntensity}
             onChangeLutIntensity={onChangeQuickLutBatchLutIntensity}
+            onApplyLutIntensity={onApplyQuickLutBatchLutIntensity}
             onRun={onRunQuickLutBatchExport}
             isExporting={isExporting}
             exportMode={exportMode}
@@ -360,6 +398,26 @@ const MainLandingWorkspace = ({
             onOpenGuide={onOpenQuickConvertCodecGuide}
             onCloseGuide={onCloseQuickConvertCodecGuide}
             onRun={onRunQuickConvertBatchExport}
+            isExporting={isExporting}
+            exportMode={exportMode}
+            exportProgressPercent={exportProgressPercent}
+          />
+
+          <QuickLivePhotoBatchFeature
+            isOpen={isQuickLivePhotoPanelOpen}
+            onToggle={onToggleQuickLivePhotoPanel}
+            t={t}
+            quickLivePhotoBatchVideos={quickLivePhotoBatchVideos}
+            quickLivePhotoVideoCountLabel={quickLivePhotoVideoCountLabel}
+            quickLivePhotoTotalSizeLabel={quickLivePhotoTotalSizeLabel}
+            videoFileAccept={videoFileAccept}
+            onVideosChange={onQuickLivePhotoBatchVideosChange}
+            onClearVideos={onClearQuickLivePhotoBatchVideos}
+            onRemoveVideo={onRemoveQuickLivePhotoBatchVideo}
+            quickLivePhotoSettings={quickLivePhotoSettings}
+            onChangeCoverPositionPercent={onChangeQuickLivePhotoCoverPositionPercent}
+            onChangeMotionDurationSec={onChangeQuickLivePhotoMotionDurationSec}
+            onRun={onRunQuickLivePhotoBatchExport}
             isExporting={isExporting}
             exportMode={exportMode}
             exportProgressPercent={exportProgressPercent}

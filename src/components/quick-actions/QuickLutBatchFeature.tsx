@@ -19,6 +19,7 @@ type QuickLutBatchTextKey =
   | 'quickLutBatchSelectLut'
   | 'quickLutBatchClearLut'
   | 'quickLutBatchIntensity'
+  | 'applyLutIntensity'
   | 'quickLutBatchAccelHint'
   | 'quickLutBatchRun'
   | 'exportingVideos'
@@ -50,10 +51,12 @@ interface QuickLutBatchFeatureProps {
   onSelectLut: () => void;
   onClearLut: () => void;
   quickLutBatchLutIntensity: number;
+  quickLutBatchHasPendingLutIntensity: boolean;
   onChangeLutIntensity: (value: number) => void;
+  onApplyLutIntensity: () => void;
   onRun: () => void;
   isExporting: boolean;
-  exportMode: 'clips' | 'full' | 'split' | 'convert';
+  exportMode: 'clips' | 'full' | 'split' | 'convert' | 'livephoto';
   exportProgressPercent: number | null;
 }
 
@@ -238,7 +241,9 @@ const QuickLutBatchFeature = ({
   onSelectLut,
   onClearLut,
   quickLutBatchLutIntensity,
+  quickLutBatchHasPendingLutIntensity,
   onChangeLutIntensity,
+  onApplyLutIntensity,
   onRun,
   isExporting,
   exportMode,
@@ -424,6 +429,14 @@ const QuickLutBatchFeature = ({
                   className="w-16 bg-zinc-800 border border-white/10 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 font-mono"
                 />
                 <span className="text-[11px] text-zinc-400">%</span>
+                <Button
+                  variant={quickLutBatchHasPendingLutIntensity ? 'secondary' : 'ghost'}
+                  className="h-8 px-2 text-[11px] shrink-0"
+                  onClick={onApplyLutIntensity}
+                  disabled={!quickLutBatchHasPendingLutIntensity}
+                >
+                  {t('applyLutIntensity')}
+                </Button>
               </div>
               <p className="text-[11px] text-zinc-500">{t('quickLutBatchAccelHint')}</p>
             </div>

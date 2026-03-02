@@ -2,11 +2,13 @@ import { app, BrowserWindow, ipcMain, dialog, nativeTheme, shell } from 'electro
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 
 import ffmpeg from 'fluent-ffmpeg'
+import { LIVE_PHOTO_HELPER_OBJECTIVE_C_SOURCE } from './livePhotoHelperSource'
 
 
 const require = createRequire(import.meta.url)
@@ -245,6 +247,17 @@ const MIN_CONVERT_CRF = 0
 const MAX_CONVERT_CRF = 51
 const MAX_CONVERT_THREADS = 16
 const DEFAULT_CONVERT_THREADS = Math.max(1, Math.min(MAX_CONVERT_THREADS, os.cpus().length || 1))
+const DEFAULT_LIVE_PHOTO_COVER_POSITION_PERCENT = 50
+const DEFAULT_LIVE_PHOTO_MOTION_DURATION_SEC = 3
+const MIN_LIVE_PHOTO_MOTION_DURATION_SEC = 1.5
+const MAX_LIVE_PHOTO_MOTION_DURATION_SEC = 6
+const LIVE_PHOTO_IMAGE_EXTENSION = '.heic'
+const LIVE_PHOTO_VIDEO_EXTENSION = '.mov'
+const LIVE_PHOTO_IMAGE_QUALITY = 2
+const LIVE_PHOTO_VIDEO_CRF = 19
+const LIVE_PHOTO_HELPER_DIRECTORY_NAME = 'batchclip-livephoto-helper'
+const LIVE_PHOTO_HELPER_SOURCE_FILE_NAME = 'LivePhotoHelper.m'
+const LIVE_PHOTO_HELPER_BINARY_FILE_NAME = 'livephoto-helper'
 
 const CONVERT_FORMAT_EXTENSION_MAP: Record<ConvertContainerFormat, string> = {
   mp4: '.mp4',
@@ -1847,6 +1860,7 @@ async function exportSingleConvertedVideo(options: {
   lutIntensity?: number
   sourceVideoBitRateKbps?: number | null
   durationSec?: number | null
+  extraOutputOptions?: string[]
   jobId?: string | null
   onProgress?: (percent: number) => void
 }): Promise<void> {
@@ -1865,6 +1879,7 @@ async function exportSingleConvertedVideo(options: {
     lutIntensity = 100,
     sourceVideoBitRateKbps = null,
     durationSec = null,
+    extraOutputOptions = [],
     jobId = null,
     onProgress
   } = options
@@ -1901,6 +1916,9 @@ async function exportSingleConvertedVideo(options: {
       '-pix_fmt', targetPixFmt,
       ...encoder.outputOptions({ crf })
     ]
+    if (extraOutputOptions.length > 0) {
+      outputOptions.push(...extraOutputOptions)
+    }
     if (splitTargetVideoBitrateKbps) {
       outputOptions.push(
         ...(shouldUseDarwinVideoToolboxBitrateControl
@@ -2199,6 +2217,328 @@ async function buildUniqueOutputPath(outputDir: string, baseName: string, extens
   }
 
   throw new Error('Failed to allocate output file path')
+}
+
+let cachedLivePhotoHelperBinaryPath: string | null = null
+
+function normalizeLivePhotoCoverPositionPercent(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) {
+    return DEFAULT_LIVE_PHOTO_COVER_POSITION_PERCENT
+  }
+  return Math.min(100, Math.max(0, Math.round(numeric)))
+}
+
+function normalizeLivePhotoMotionDurationSec(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) {
+    return DEFAULT_LIVE_PHOTO_MOTION_DURATION_SEC
+  }
+
+  const rounded = Math.round(numeric * 10) / 10
+  return Math.min(MAX_LIVE_PHOTO_MOTION_DURATION_SEC, Math.max(MIN_LIVE_PHOTO_MOTION_DURATION_SEC, rounded))
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.promises.access(targetPath, fs.constants.F_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function runSpawnedCommand(options: {
+  command: string
+  args: string[]
+  jobId?: string | null
+}): Promise<{ stdout: string; stderr: string }> {
+  const { command, args, jobId = null } = options
+  throwIfJobCanceled(jobId)
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      windowsHide: true
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString()
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+
+    child.once('error', (error) => {
+      reject(error)
+    })
+
+    child.once('close', (code) => {
+      if (isJobMarkedCanceled(jobId)) {
+        reject(createJobCanceledError())
+        return
+      }
+
+      if (code === 0) {
+        resolve({ stdout, stderr })
+        return
+      }
+
+      const detail = stderr.trim() || stdout.trim()
+      reject(new Error(`${path.basename(command)} exited with code ${code}${detail ? `: ${detail}` : ''}`))
+    })
+  })
+}
+
+async function ensureLivePhotoHelperBinary(jobId: string | null): Promise<string> {
+  if (process.platform !== 'darwin') {
+    throw new Error('Live Photo conversion requires macOS')
+  }
+
+  const helperDir = path.join(app.getPath('temp'), LIVE_PHOTO_HELPER_DIRECTORY_NAME)
+  await fs.promises.mkdir(helperDir, { recursive: true })
+
+  const sourcePath = path.join(helperDir, LIVE_PHOTO_HELPER_SOURCE_FILE_NAME)
+  const binaryPath = path.join(helperDir, LIVE_PHOTO_HELPER_BINARY_FILE_NAME)
+  const expectedSource = `${LIVE_PHOTO_HELPER_OBJECTIVE_C_SOURCE.trim()}\n`
+
+  let sourceUpdated = false
+  let currentSource = ''
+  try {
+    currentSource = await fs.promises.readFile(sourcePath, 'utf8')
+  } catch {
+    currentSource = ''
+  }
+  if (currentSource !== expectedSource) {
+    await fs.promises.writeFile(sourcePath, expectedSource, 'utf8')
+    sourceUpdated = true
+  }
+
+  const binaryExists = await pathExists(binaryPath)
+  if (!binaryExists || sourceUpdated) {
+    try {
+      await runSpawnedCommand({
+        command: '/usr/bin/xcrun',
+        args: [
+          'clang',
+          '-fobjc-arc',
+          '-O2',
+          '-Wno-deprecated-declarations',
+          '-framework', 'Foundation',
+          '-framework', 'AVFoundation',
+          '-framework', 'ImageIO',
+          '-framework', 'CoreMedia',
+          '-framework', 'CoreGraphics',
+          '-o', binaryPath,
+          sourcePath
+        ],
+        jobId
+      })
+    } catch (error: unknown) {
+      const detail = getErrorMessage(error)
+      throw new Error(
+        `Failed to compile macOS Live Photo helper. ` +
+        `Please ensure Xcode Command Line Tools are available and healthy. ` +
+        `Try running: "xcode-select --install". ` +
+        `Detail: ${detail}`
+      )
+    }
+  }
+
+  cachedLivePhotoHelperBinaryPath = binaryPath
+  return binaryPath
+}
+
+async function finalizeLivePhotoPairWithNativeHelper(options: {
+  photoInputPath: string
+  videoInputPath: string
+  photoOutputPath: string
+  videoOutputPath: string
+  assetIdentifier: string
+  jobId?: string | null
+}): Promise<void> {
+  const {
+    photoInputPath,
+    videoInputPath,
+    photoOutputPath,
+    videoOutputPath,
+    assetIdentifier,
+    jobId = null
+  } = options
+
+  const helperBinaryPath = cachedLivePhotoHelperBinaryPath
+    && await pathExists(cachedLivePhotoHelperBinaryPath)
+    ? cachedLivePhotoHelperBinaryPath
+    : await ensureLivePhotoHelperBinary(jobId)
+
+  await runSpawnedCommand({
+    command: helperBinaryPath,
+    args: [
+      '--photo-input', photoInputPath,
+      '--video-input', videoInputPath,
+      '--photo-output', photoOutputPath,
+      '--video-output', videoOutputPath,
+      '--asset-id', assetIdentifier
+    ],
+    jobId
+  })
+}
+
+async function buildUniqueLivePhotoOutputPaths(options: {
+  outputDir: string
+  baseName: string
+}): Promise<{ photoPath: string; videoPath: string }> {
+  const { outputDir, baseName } = options
+  for (let suffix = 1; suffix < 100000; suffix++) {
+    const suffixPart = suffix === 1 ? '' : `_${suffix}`
+    const outputBase = `${baseName}${suffixPart}`
+    const photoPath = path.join(outputDir, `${outputBase}${LIVE_PHOTO_IMAGE_EXTENSION}`)
+    const videoPath = path.join(outputDir, `${outputBase}${LIVE_PHOTO_VIDEO_EXTENSION}`)
+    const [photoExists, videoExists] = await Promise.all([
+      pathExists(photoPath),
+      pathExists(videoPath)
+    ])
+    if (!photoExists && !videoExists) {
+      return { photoPath, videoPath }
+    }
+  }
+
+  throw new Error('Failed to allocate live photo output paths')
+}
+
+async function extractStillFrameAsJpeg(options: {
+  filePath: string
+  captureTimeSec: number
+  outputPath: string
+  jobId?: string | null
+}): Promise<void> {
+  const { filePath, captureTimeSec, outputPath, jobId = null } = options
+  const command = ffmpeg(filePath)
+    .setStartTime(Math.max(0, captureTimeSec))
+    .output(outputPath)
+    .outputOptions([
+      '-map', '0:v:0',
+      '-frames:v', '1',
+      '-q:v', `${LIVE_PHOTO_IMAGE_QUALITY}`
+    ])
+
+  await runFfmpegCommand(command, { jobId })
+}
+
+async function convertSingleVideoToLivePhoto(options: {
+  filePath: string
+  outputDir: string
+  coverPositionPercent: number
+  motionDurationSec: number
+  jobId?: string | null
+  onProgress?: (percent: number) => void
+}): Promise<{ photoPath: string; videoPath: string }> {
+  const {
+    filePath,
+    outputDir,
+    coverPositionPercent,
+    motionDurationSec,
+    jobId = null,
+    onProgress
+  } = options
+
+  const safeCoverPositionPercent = normalizeLivePhotoCoverPositionPercent(coverPositionPercent)
+  const safeMotionDurationSec = normalizeLivePhotoMotionDurationSec(motionDurationSec)
+  const sourceInfo = await probeVideoInfo(filePath)
+  const sourceDurationSec = sourceInfo.durationSec
+  if (!sourceDurationSec || !Number.isFinite(sourceDurationSec) || sourceDurationSec <= 0) {
+    throw new Error('Unable to read source duration for live photo conversion')
+  }
+
+  const captureTimeSec = Math.min(sourceDurationSec, Math.max(0, (safeCoverPositionPercent / 100) * sourceDurationSec))
+  const effectiveMotionDurationSec = Math.min(sourceDurationSec, Math.max(MIN_LIVE_PHOTO_MOTION_DURATION_SEC, safeMotionDurationSec))
+  const maxStartSec = Math.max(0, sourceDurationSec - effectiveMotionDurationSec)
+  const clipStartSec = Math.min(maxStartSec, Math.max(0, captureTimeSec - effectiveMotionDurationSec / 2))
+  const clipDurationSec = Math.min(effectiveMotionDurationSec, sourceDurationSec - clipStartSec)
+  if (!Number.isFinite(clipDurationSec) || clipDurationSec <= 0.05) {
+    throw new Error('Source video is too short for live photo conversion')
+  }
+
+  const safeBaseName = sanitizeFilenamePart(path.basename(filePath, path.extname(filePath))) || 'live_photo'
+  const outputBaseName = `${safeBaseName}_live`
+  const { photoPath, videoPath } = await buildUniqueLivePhotoOutputPaths({
+    outputDir,
+    baseName: outputBaseName
+  })
+
+  const tempDir = await fs.promises.mkdtemp(path.join(app.getPath('temp'), 'batchclip-livephoto-'))
+  const tempJpegPath = path.join(tempDir, `${safeBaseName}_still.jpg`)
+  const tempMotionVideoPath = path.join(tempDir, `${safeBaseName}_motion.mov`)
+  const assetIdentifier = randomUUID().toLowerCase()
+
+  let outputCreated = false
+  let lastReportedPercent = 0
+  const emitProgress = (percent: number) => {
+    const clamped = Math.min(100, Math.max(0, percent))
+    if (clamped < lastReportedPercent) {
+      onProgress?.(lastReportedPercent)
+      return
+    }
+    lastReportedPercent = clamped
+    onProgress?.(clamped)
+  }
+
+  try {
+    throwIfJobCanceled(jobId)
+    emitProgress(5)
+    await extractStillFrameAsJpeg({
+      filePath,
+      captureTimeSec,
+      outputPath: tempJpegPath,
+      jobId
+    })
+
+    throwIfJobCanceled(jobId)
+    emitProgress(25)
+
+    await exportSingleConvertedVideo({
+      filePath,
+      outputPath: tempMotionVideoPath,
+      format: 'mov',
+      videoCodec: 'h264',
+      audioCodec: 'aac',
+      crf: LIVE_PHOTO_VIDEO_CRF,
+      performanceMode: 'auto',
+      startSec: clipStartSec,
+      clipDurationSec,
+      durationSec: clipDurationSec,
+      jobId,
+      onProgress: (videoPercent) => {
+        emitProgress(25 + (Math.min(100, Math.max(0, videoPercent)) / 100) * 60)
+      }
+    })
+    emitProgress(88)
+
+    throwIfJobCanceled(jobId)
+    await finalizeLivePhotoPairWithNativeHelper({
+      photoInputPath: tempJpegPath,
+      videoInputPath: tempMotionVideoPath,
+      photoOutputPath: photoPath,
+      videoOutputPath: videoPath,
+      assetIdentifier,
+      jobId
+    })
+    emitProgress(100)
+
+    outputCreated = true
+    return {
+      photoPath,
+      videoPath
+    }
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    if (!outputCreated) {
+      await removeFileIfExists(photoPath)
+      await removeFileIfExists(videoPath)
+    }
+  }
 }
 
 async function cleanupPreviewProxy(proxyPath: string): Promise<void> {
@@ -3150,6 +3490,192 @@ ipcMain.handle('process-convert-batch', async (event, {
         audioCodec: effectiveAudioCodec,
         crf: normalizedCrf,
         performanceMode: normalizedPerformanceMode
+      }
+    }
+  } finally {
+    releaseJobScope?.()
+  }
+})
+
+ipcMain.handle('process-live-photo-batch', async (event, {
+  videos,
+  outputDir,
+  coverPositionPercent,
+  motionDurationSec,
+  jobId
+}) => {
+  if (process.platform !== 'darwin') {
+    return {
+      success: false,
+      error: 'Live Photo conversion is currently available on macOS only',
+      results: []
+    }
+  }
+
+  if (!outputDir || typeof outputDir !== 'string') {
+    return { success: false, error: 'Invalid output directory', results: [] }
+  }
+
+  const normalizedVideos = Array.isArray(videos)
+    ? videos.filter((video) => (
+      Boolean(video) &&
+      typeof video.id === 'string' &&
+      video.id.length > 0 &&
+      typeof video.filePath === 'string' &&
+      video.filePath.length > 0
+    ))
+    : []
+
+  if (normalizedVideos.length === 0) {
+    return { success: false, error: 'No videos selected', results: [] }
+  }
+
+  const normalizedCoverPositionPercent = normalizeLivePhotoCoverPositionPercent(coverPositionPercent)
+  const normalizedMotionDurationSec = normalizeLivePhotoMotionDurationSec(motionDurationSec)
+  const warnings: string[] = []
+
+  const totalVideos = normalizedVideos.length
+  const results: Array<{
+    id: string
+    success: boolean
+    photoPath?: string
+    videoPath?: string
+    error?: string
+  }> = []
+  const progressJobId = typeof jobId === 'string' && jobId ? jobId : null
+  const releaseJobScope = beginJobScope(progressJobId)
+  let lastReportedProgress = -1
+  const emitExportProgress = (
+    phase: 'start' | 'progress' | 'done',
+    percent: number,
+    currentVideo = 0,
+    total = totalVideos
+  ) => {
+    if (!progressJobId) return
+
+    const clampedPercent = Math.min(100, Math.max(0, percent))
+    const rounded = Math.round(clampedPercent)
+    if (phase === 'progress' && rounded === lastReportedProgress) {
+      return
+    }
+
+    if (phase === 'progress') {
+      lastReportedProgress = rounded
+    }
+
+    event.sender.send('batch-export-progress', {
+      jobId: progressJobId,
+      phase,
+      percent: rounded,
+      currentClip: currentVideo,
+      totalClips: total
+    })
+  }
+
+  try {
+    throwIfJobCanceled(progressJobId)
+    await fs.promises.mkdir(outputDir, { recursive: true })
+    emitExportProgress('start', 0, 0, totalVideos)
+
+    for (let index = 0; index < normalizedVideos.length; index++) {
+      throwIfJobCanceled(progressJobId)
+      const entry = normalizedVideos[index]
+      const videoIndex = index + 1
+      const segmentStartPercent = (index / Math.max(totalVideos, 1)) * 100
+      const segmentWeight = 100 / Math.max(totalVideos, 1)
+
+      try {
+        let maxVideoPercent = 0
+        const emitVideoProgress = (videoPercent: number) => {
+          maxVideoPercent = Math.max(maxVideoPercent, Math.min(100, Math.max(0, videoPercent)))
+          const overallPercent = segmentStartPercent + (maxVideoPercent / 100) * segmentWeight
+          emitExportProgress('progress', overallPercent, videoIndex, totalVideos)
+        }
+
+        const converted = await convertSingleVideoToLivePhoto({
+          filePath: entry.filePath,
+          outputDir,
+          coverPositionPercent: normalizedCoverPositionPercent,
+          motionDurationSec: normalizedMotionDurationSec,
+          jobId: progressJobId,
+          onProgress: emitVideoProgress
+        })
+
+        emitExportProgress('progress', ((index + 1) / Math.max(totalVideos, 1)) * 100, videoIndex, totalVideos)
+        results.push({
+          id: entry.id,
+          success: true,
+          photoPath: converted.photoPath,
+          videoPath: converted.videoPath
+        })
+      } catch (error: unknown) {
+        if (isJobCanceledError(error) || isJobMarkedCanceled(progressJobId)) {
+          const canceledPercent = lastReportedProgress >= 0 ? lastReportedProgress : Math.round(segmentStartPercent)
+          emitExportProgress('done', canceledPercent, index, totalVideos)
+          return {
+            success: false,
+            canceled: true,
+            error: JOB_CANCELED_ERROR_MESSAGE,
+            results,
+            warnings,
+            settings: {
+              coverPositionPercent: normalizedCoverPositionPercent,
+              motionDurationSec: normalizedMotionDurationSec
+            }
+          }
+        }
+
+        const errorMessage = getErrorMessage(error)
+        emitExportProgress('progress', ((index + 1) / Math.max(totalVideos, 1)) * 100, videoIndex, totalVideos)
+        results.push({
+          id: entry.id,
+          success: false,
+          error: errorMessage
+        })
+      }
+    }
+
+    const failedResults = results.filter((item) => !item.success)
+    const firstFailure = failedResults[0]
+    emitExportProgress('done', 100, totalVideos, totalVideos)
+    return {
+      success: failedResults.length === 0,
+      error: firstFailure?.error
+        ? `Live Photo conversion failed for ${failedResults.length}/${totalVideos} video(s). First error: ${firstFailure.error}`
+        : undefined,
+      results,
+      warnings,
+      settings: {
+        coverPositionPercent: normalizedCoverPositionPercent,
+        motionDurationSec: normalizedMotionDurationSec
+      }
+    }
+  } catch (error: unknown) {
+    if (isJobCanceledError(error) || isJobMarkedCanceled(progressJobId)) {
+      const canceledPercent = lastReportedProgress >= 0 ? lastReportedProgress : 0
+      emitExportProgress('done', canceledPercent, results.length, Math.max(results.length, 1))
+      return {
+        success: false,
+        canceled: true,
+        error: JOB_CANCELED_ERROR_MESSAGE,
+        results,
+        warnings,
+        settings: {
+          coverPositionPercent: normalizedCoverPositionPercent,
+          motionDurationSec: normalizedMotionDurationSec
+        }
+      }
+    }
+
+    emitExportProgress('done', 100, results.length, Math.max(results.length, 1))
+    return {
+      success: false,
+      error: getErrorMessage(error),
+      results,
+      warnings,
+      settings: {
+        coverPositionPercent: normalizedCoverPositionPercent,
+        motionDurationSec: normalizedMotionDurationSec
       }
     }
   } finally {
